@@ -559,32 +559,8 @@ static void playback_stream_process(void *data)
         goto error;
     }
     
-    /* Send proper XRDP SNDC_WAVE message */
-    static uint8_t block_number = 0;
-    uint32_t timestamp = (uint32_t)(time(NULL) * 1000); /* Simple timestamp */
-    
-    struct {
-        uint16_t msg_type;      /* SNDC_WAVE = 0x02 */
-        uint16_t msg_size;      /* Message size */
-        uint16_t timestamp;     /* Timestamp */
-        uint16_t format_index;  /* Format 0 = 44100Hz */
-        uint8_t block_number;   /* Block sequence */
-    } __attribute__((packed)) wave_header;
-    
-    wave_header.msg_type = 0x02;        /* SNDC_WAVE */
-    wave_header.msg_size = 9 + size_all; /* Header + data */
-    wave_header.timestamp = timestamp & 0xFFFF;
-    wave_header.format_index = 0;       /* Format 0 (44100Hz) */
-    wave_header.block_number = ++block_number;
-    
-    pw_log_info("Sending SNDC_WAVE: size=%d, format=0, block=%d", wave_header.msg_size, block_number);
-    
-    if (lsend(impl->fd_sink, (char*)&wave_header, 9) != 9) {
-        pw_log_warn("Failed to send SNDC_WAVE header");
-        close(impl->fd_sink);
-        impl->fd_sink = -1;
-        goto error;
-    }
+    /* Send raw PCM audio data directly to chansrv */
+    pw_log_info("Sending raw PCM audio data: %d bytes", size_all);
 
 	for (uint32_t i = 0; i < buf->buffer->n_datas; i++) {
         uint32_t size, offs;
