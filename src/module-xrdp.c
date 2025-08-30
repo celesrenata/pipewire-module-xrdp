@@ -362,6 +362,8 @@ static void stream_state_changed_source(void *d, enum pw_stream_state old,
     pw_log_debug("stream_state_changed:%s", pw_stream_state_as_string (state));
 }
 
+static int conect_xrdp_socket(struct impl *impl, char *filename);
+
 static void set_socket_path(struct impl *impl) {
 	const char *socket_path;
     char default_socket_path[128];
