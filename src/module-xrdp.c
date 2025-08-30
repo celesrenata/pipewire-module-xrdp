@@ -241,8 +241,8 @@ static void stream_destroy_source(void *d)
 }
 
 struct header {
-    int code;
-    int bytes;
+    uint32_t id;
+    uint32_t size;
 };
 
 static int get_display_num_from_display(const char *display_text) {
@@ -270,8 +270,8 @@ static int close_send_sink(struct impl *impl) {
     pw_log_info("close_send_sink");
     if (impl->fd_sink != -1) {
         struct header h;
-        h.code = 1;  /* Close code */
-        h.bytes = 8;
+        h.id = 1;  /* Close ID */
+        h.size = 8;
         if (lsend(impl->fd_sink, (char*)(&h), 8) != 8) {
             pw_log_debug("close_send: send failed");
         } else {
@@ -578,8 +578,8 @@ static void playback_stream_process(void *data)
     
     /* Send header first like original code: h.code = 0; h.bytes = 8 + size_all; */
     struct header h;
-    h.code = 0;
-    h.bytes = 8 + size_all;
+    h.id = 0;
+    h.size = 8 + size_all;
     if (lsend(impl->fd_sink, (char*)(&h), 8) != 8) {
         pw_log_warn("data_send: send header failed");
         close(impl->fd_sink);
