@@ -365,24 +365,23 @@ static void stream_state_changed_source(void *d, enum pw_stream_state old,
 static void set_socket_path(struct impl *impl) {
 	const char *socket_path;
     char default_socket_path[128];
+    char default_socket_name[128];
 
     const char *socket_dir;
     const char *socket_name;
 
     socket_dir = getenv("XRDP_SOCKET_PATH");
     if (socket_dir == NULL || socket_dir[0] == '\0') {
-		return;
+		snprintf(default_socket_path, sizeof(default_socket_path)-1, "/var/run/xrdp/%d", getuid());
+		socket_dir = default_socket_path;
 	}
     impl->display_num = get_display_num_from_display(getenv("DISPLAY"));
 
     socket_name = getenv("XRDP_PULSE_SINK_SOCKET");
     if (socket_name == NULL || socket_name[0] == '\0') {
-		return;
-
-		//pw_log_debug("Could not obtain xrdp_socket from environment.");
-		//snprintf(default_socket_name, sizeof(default_socket_name)-1,
-		//		"xrdp_chansrv_audio_out_socket_%d", impl->display_num);
-       	//socket_name = default_socket_name;
+		snprintf(default_socket_name, sizeof(default_socket_name)-1,
+			"xrdp_chansrv_audio_out_socket_%d", impl->display_num);
+       	socket_name = default_socket_name;
    	}
 	snprintf(default_socket_path, sizeof(default_socket_path)-1, "%s/%s", socket_dir, socket_name);
 	socket_path = default_socket_path;
@@ -393,12 +392,9 @@ static void set_socket_path(struct impl *impl) {
 
     socket_name = getenv("XRDP_PULSE_SOURCE_SOCKET");
     if (socket_name == NULL || socket_name[0] == '\0') {
-		return;
-
-		//pw_log_debug("Could not obtain xrdp_socket from environment.");
-		//snprintf(default_socket_name, sizeof(default_socket_name)-1,
-		//		"xrdp_chansrv_audio_out_socket_%d", impl->display_num);
-       	//socket_name = default_socket_name;
+		snprintf(default_socket_name, sizeof(default_socket_name)-1,
+			"xrdp_chansrv_audio_in_socket_%d", impl->display_num);
+       	socket_name = default_socket_name;
    	}
 	snprintf(default_socket_path, sizeof(default_socket_path)-1, "%s/%s", socket_dir, socket_name);
 	socket_path = default_socket_path;
@@ -406,6 +402,11 @@ static void set_socket_path(struct impl *impl) {
     pw_log_info("set_source_socket. socket path:%s", socket_path);
 
 	impl->filename_source = strdup(socket_path);
+	
+	// Try to connect immediately after setting paths
+	if (impl->filename_sink) {
+		impl->fd_sink = conect_xrdp_socket(impl, impl->filename_sink);
+	}
 }
 
 static int conect_xrdp_socket(struct impl *impl, char *filename) {
