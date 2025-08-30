@@ -340,7 +340,7 @@ static void stream_state_changed_sink(void *d, enum pw_stream_state old,
 			const struct spa_pod *params[1];
 			params[0] = spa_pod_builder_add_object(&b,
 				SPA_TYPE_OBJECT_Props, SPA_PARAM_Props,
-				SPA_PROP_suspendOnIdle, SPA_POD_Bool(false));
+				SPA_PROP_suspend, SPA_POD_Bool(false));
 			pw_stream_update_params(impl->stream_sink, params, 1);
 		}
 		pw_stream_set_active(impl->stream_sink, true);
