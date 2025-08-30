@@ -324,6 +324,7 @@ static void stream_state_changed_sink(void *d, enum pw_stream_state old,
 		enum pw_stream_state state, const char *error)
 {
 	struct impl *impl = d;
+	uint8_t buffer[1024];
 	switch (state) {
 	case PW_STREAM_STATE_ERROR:
 	case PW_STREAM_STATE_UNCONNECTED:
@@ -332,8 +333,16 @@ static void stream_state_changed_sink(void *d, enum pw_stream_state old,
 		break;
 	case PW_STREAM_STATE_PAUSED:
 		// Don't close sink on PAUSED - this is a normal state
-		// Try to activate the stream to transition to STREAMING
-		pw_log_info("Stream PAUSED, attempting to activate");
+		// Force the node to be active by setting suspend-on-idle to false
+		pw_log_info("Stream PAUSED, forcing node to be active");
+		{
+			struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
+			const struct spa_pod *params[1];
+			params[0] = spa_pod_builder_add_object(&b,
+				SPA_TYPE_OBJECT_Props, SPA_PARAM_Props,
+				SPA_PROP_suspendOnIdle, SPA_POD_Bool(false));
+			pw_stream_update_params(impl->stream_sink, params, 1);
+		}
 		pw_stream_set_active(impl->stream_sink, true);
 		break;
 	case PW_STREAM_STATE_STREAMING:
