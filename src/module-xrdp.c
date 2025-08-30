@@ -559,9 +559,26 @@ static void playback_stream_process(void *data)
         goto error;
     }
     
-    pw_log_info("Sending header: code=0, bytes=%d", 8 + size_all);
+    /* Send format selection first time only */
+    static int format_sent = 0;
+    if (!format_sent) {
+        pw_log_info("Sending format selection: format=0 (44100Hz)");
+        struct header format_h;
+        format_h.code = 1;  /* Format selection */
+        format_h.bytes = 8 + 4;  /* Header + format number */
+        
+        if (lsend(impl->fd_sink, (char*)(&format_h), 8) == 8) {
+            uint32_t format_num = 0;  /* Use format 0 (44100Hz) */
+            if (lsend(impl->fd_sink, (char*)(&format_num), 4) == 4) {
+                format_sent = 1;
+                pw_log_info("Format selection sent successfully");
+            }
+        }
+    }
+    
+    pw_log_info("Sending header: code=2, bytes=%d", 8 + size_all);
     struct header h;
-    h.code = 0;
+    h.code = 2;  /* Audio data code */
     h.bytes = 8 + size_all;
     if (lsend(impl->fd_sink, (char*)(&h), 8) != 8) {
         pw_log_warn("data_send: send header failed");
