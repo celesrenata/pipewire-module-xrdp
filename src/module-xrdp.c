@@ -153,7 +153,7 @@ PW_LOG_TOPIC_STATIC(mod_topic, "mod." NAME);
 			"[ source.stream.props=<properties for source> ] "
 
 
-/* commands to xrdp_chansrv_audio_in_socket (xrdp/sesman/chansrv/sound.h)*/
+/* commands to xrdp_chansrv_audio_out_socket (xrdp/sesman/chansrv/sound.h)*/
 #define PA_CMD_START_REC    1
 #define PA_CMD_STOP_REC     2
 #define PA_CMD_SEND_DATA    3
@@ -280,10 +280,10 @@ static int lsend(int fd, char *data, int bytes) {
 static int close_send_sink(struct impl *impl) {
     pw_log_info("close_send_sink");
     if (impl->fd_sink != -1) {
-        struct header h;
-        h.id = 1;  /* Close ID */
-        h.size = 8;
-        if (lsend(impl->fd_sink, (char*)(&h), 8) != 8) {
+        uint32_t header[2];
+        header[0] = htole32(1);  /* id = 1 (close) */
+        header[1] = htole32(8);  /* size = header only */
+        if (lsend(impl->fd_sink, (char*)header, 8) != 8) {
             pw_log_debug("close_send: send failed");
         } else {
             pw_log_debug("close_send: sent header ok");
@@ -466,7 +466,7 @@ static void set_socket_path(struct impl *impl) {
     socket_name = getenv("XRDP_PULSE_SINK_SOCKET");
     if (socket_name == NULL || socket_name[0] == '\0') {
 		snprintf(default_socket_name, sizeof(default_socket_name)-1,
-			"xrdp_chansrv_audio_in_socket_%d", impl->display_num);
+			"xrdp_chansrv_audio_out_socket_%d", impl->display_num);
        	socket_name = default_socket_name;
    	}
 	snprintf(default_socket_path, sizeof(default_socket_path)-1, "%s/%s", socket_dir, socket_name);
@@ -479,7 +479,7 @@ static void set_socket_path(struct impl *impl) {
     socket_name = getenv("XRDP_PULSE_SOURCE_SOCKET");
     if (socket_name == NULL || socket_name[0] == '\0') {
 		snprintf(default_socket_name, sizeof(default_socket_name)-1,
-			"xrdp_chansrv_audio_in_socket_%d", impl->display_num);
+			"xrdp_chansrv_audio_out_socket_%d", impl->display_num);
        	socket_name = default_socket_name;
    	}
 	snprintf(default_socket_path, sizeof(default_socket_path)-1, "%s/%s", socket_dir, socket_name);
@@ -559,11 +559,11 @@ static void playback_stream_process(void *data)
         goto error;
     }
     
-    /* Send header first like original code: h.code = 0; h.bytes = 8 + size_all; */
-    struct header h;
-    h.id = 0;
-    h.size = 8 + size_all;
-    if (lsend(impl->fd_sink, (char*)(&h), 8) != 8) {
+    /* Send header first: id=0 (audio data), size=8+data_size in little-endian */
+    uint32_t header[2];
+    header[0] = htole32(0);  /* id = 0 (audio data) */
+    header[1] = htole32(8 + size_all);  /* size = header + data */
+    if (lsend(impl->fd_sink, (char*)header, 8) != 8) {
         pw_log_warn("data_send: send header failed");
         close(impl->fd_sink);
         impl->fd_sink = -1;
