@@ -332,7 +332,11 @@ static void stream_state_changed_sink(void *d, enum pw_stream_state old,
 		break;
 	case PW_STREAM_STATE_PAUSED:
 		// Don't close sink on PAUSED - this is a normal state
-		pw_log_info("Stream PAUSED - node should remain active due to suspend-on-idle=false");
+		pw_log_info("Stream PAUSED - forcing activation to start audio processing");
+		// Force the stream to be active and start processing
+		pw_stream_set_active(impl->stream_sink, true);
+		// Force the stream to start by flushing it
+		pw_stream_flush(impl->stream_sink, false);
 		break;
 	case PW_STREAM_STATE_STREAMING:
 		pw_log_info("Stream now STREAMING - audio should work");
