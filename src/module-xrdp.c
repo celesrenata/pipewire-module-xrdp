@@ -443,14 +443,21 @@ static void playback_stream_process(void *data)
 	ssize_t written_all = 0;
 	uint32_t size_all = 0;
 
+	pw_log_info("=== PLAYBACK STREAM PROCESS CALLED ===");
+
 	if ((buf = pw_stream_dequeue_buffer(impl->stream_sink)) == NULL) {
 		pw_log_debug("out of buffers: %m");
 		return;
 	}
 
+	pw_log_info("Got buffer, checking socket connection fd_sink=%d", impl->fd_sink);
+
     if (impl->fd_sink == -1) {
-        if ((impl->fd_sink = conect_xrdp_socket(impl, impl->filename_sink)) == -1)
+		pw_log_info("Socket not connected, attempting connection to %s", impl->filename_sink);
+        if ((impl->fd_sink = conect_xrdp_socket(impl, impl->filename_sink)) == -1) {
+			pw_log_warn("Socket connection failed, going to error");
             goto error;
+		}
 	}
 
 	for (uint32_t i = 0; i < buf->buffer->n_datas; i++) {
