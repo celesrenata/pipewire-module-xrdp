@@ -425,7 +425,12 @@ static int conect_xrdp_socket(struct impl *impl, char *filename) {
         fd = -1;
     } else {
         impl->failed_connect_time = 0;
-        pw_log_info("Connected ok fd %d", fd);
+        struct stat st;
+        if (fstat(fd, &st) == 0) {
+            pw_log_info("Connected ok fd %d, socket inode %lu", fd, st.st_ino);
+        } else {
+            pw_log_info("Connected ok fd %d, could not get inode", fd);
+        }
     }
     return fd;
 }
