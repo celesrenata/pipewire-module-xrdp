@@ -513,12 +513,10 @@ static void playback_stream_process(void *data)
                 goto done;
             }
         } else if (fstat(impl->fd_sink, &fd_stat) != 0 || path_stat.st_ino != fd_stat.st_ino) {
-            pw_log_warn("XRDP created new socket (path inode %lu != our inode %lu), waiting then reconnecting", 
+            pw_log_warn("XRDP created new socket (path inode %lu != our inode %lu), reconnecting", 
                        path_stat.st_ino, fd_stat.st_ino);
             close(impl->fd_sink);
             impl->fd_sink = -1;
-            // Wait 50ms for XRDP to finish socket setup
-            usleep(50000);
             if ((impl->fd_sink = conect_xrdp_socket(impl, impl->filename_sink)) == -1) {
                 pw_log_warn("Socket reconnection failed, dropping audio data");
                 goto done;
