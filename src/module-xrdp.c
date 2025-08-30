@@ -434,11 +434,6 @@ static void set_socket_path(struct impl *impl) {
     pw_log_info("set_source_socket. socket path:%s", socket_path);
 
 	impl->filename_source = strdup(socket_path);
-	
-	// Try to connect immediately after setting paths
-	if (impl->filename_sink) {
-		impl->fd_sink = conect_xrdp_socket(impl, impl->filename_sink);
-	}
 }
 
 static void playback_stream_process(void *data)
