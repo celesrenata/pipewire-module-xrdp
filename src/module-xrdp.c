@@ -559,6 +559,19 @@ static void playback_stream_process(void *data)
         goto error;
     }
     
+    /* Send format selection handshake first time only */
+    static int format_sent = 0;
+    if (!format_sent) {
+        uint32_t format_selection = 0; /* Select format 0 (44100Hz) */
+        pw_log_info("Sending format selection: format=0 (44100Hz)");
+        if (lsend(impl->fd_sink, (char*)&format_selection, 4) == 4) {
+            format_sent = 1;
+            pw_log_info("Format selection sent successfully");
+        } else {
+            pw_log_warn("Failed to send format selection");
+        }
+    }
+    
     /* Send raw PCM audio data directly to chansrv */
     pw_log_info("Sending raw PCM audio data: %d bytes", size_all);
 
