@@ -581,6 +581,7 @@ static void playback_stream_process(void *data)
         }
 	}
 
+done:
 error:
 	pw_stream_queue_buffer(impl->stream_sink, buf);
 
