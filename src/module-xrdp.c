@@ -331,7 +331,7 @@ static void stream_state_changed_sink(void *d, enum pw_stream_state old,
 		unload_module(impl);
 		break;
 	case PW_STREAM_STATE_PAUSED:
-		close_send_sink(impl);
+		// Don't close sink on PAUSED - this is a normal state
 		break;
 	case PW_STREAM_STATE_STREAMING:
 		break;
