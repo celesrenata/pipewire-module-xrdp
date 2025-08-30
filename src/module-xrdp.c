@@ -501,6 +501,20 @@ static void playback_stream_process(void *data)
 			pw_log_warn("Socket connection failed, going to error");
             goto error;
 		}
+	} else {
+        /* Verify socket is still valid by checking if path exists and has same inode */
+        struct stat path_stat, fd_stat;
+        if (stat(impl->filename_sink, &path_stat) != 0 || fstat(impl->fd_sink, &fd_stat) != 0 || 
+            path_stat.st_ino != fd_stat.st_ino) {
+            pw_log_warn("Socket became stale (path inode %lu != fd inode %lu), reconnecting", 
+                       path_stat.st_ino, fd_stat.st_ino);
+            close(impl->fd_sink);
+            impl->fd_sink = -1;
+            if ((impl->fd_sink = conect_xrdp_socket(impl, impl->filename_sink)) == -1) {
+                pw_log_warn("Socket reconnection failed, going to error");
+                goto error;
+            }
+        }
 	}
 
 	for (uint32_t i = 0; i < buf->buffer->n_datas; i++) {
