@@ -853,15 +853,6 @@ static void copy_props(struct pw_properties *stream_props, struct pw_properties 
 	}
 }
 
-static const struct pw_module_info module_info = {
-	.name = "libpipewire-module-xrdp",
-	.version = PW_VERSION,
-	.description = "XRDP audio module",
-	.author = "Neutrinolabs",
-	.license = "MIT",
-};
-
-SPA_EXPORT const struct pw_module_info *pw_module_info = &module_info;
 
 SPA_EXPORT
 int pipewire__module_init(struct pw_impl_module *module, const char *args)
