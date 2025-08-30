@@ -968,9 +968,10 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	// Set proper port names for sink (playback)
 	pw_properties_set(impl->stream_props_sink, "port.name.prefix", "playback");
 	
-	// Prevent the node from suspending
-	pw_properties_set(impl->stream_props_sink, "node.suspend-on-idle", "false");
-	pw_properties_set(impl->stream_props_sink, "node.pause-on-idle", "false");
+	// Force the node to always process and never suspend
+	pw_properties_set(impl->stream_props_sink, PW_KEY_NODE_ALWAYS_PROCESS, "true");
+	pw_properties_set(impl->stream_props_sink, PW_KEY_NODE_SUSPEND_ON_IDLE, "false");
+	pw_properties_set(impl->stream_props_sink, PW_KEY_NODE_PAUSE_ON_IDLE, "false");
 
 	parse_audio_info(impl->stream_props_sink, &impl->info);
 
