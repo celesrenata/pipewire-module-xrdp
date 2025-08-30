@@ -332,10 +332,16 @@ static void stream_state_changed_sink(void *d, enum pw_stream_state old,
 		break;
 	case PW_STREAM_STATE_PAUSED:
 		// Don't close sink on PAUSED - this is a normal state
-		pw_log_info("Stream PAUSED - setting active and triggering process");
+		pw_log_info("Stream PAUSED - forcing underlying node to running state");
+		{
+			// Get the underlying node and force it to running state
+			struct pw_impl_node *node = pw_stream_get_node(impl->stream_sink);
+			if (node) {
+				pw_impl_node_set_state(node, PW_NODE_STATE_RUNNING);
+				pw_log_info("Forced node to RUNNING state");
+			}
+		}
 		pw_stream_set_active(impl->stream_sink, true);
-		// Use trigger_process to force processing
-		pw_stream_trigger_process(impl->stream_sink);
 		break;
 	case PW_STREAM_STATE_STREAMING:
 		pw_log_info("Stream now STREAMING - audio should work");
