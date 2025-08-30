@@ -504,16 +504,23 @@ static void playback_stream_process(void *data)
         size_all += size;
     }
     pw_log_info("Total audio data size: %d bytes", size_all);
+    
+    if (size_all == 0) {
+        pw_log_info("No audio data to send, skipping");
+        goto error;
+    }
+    
+    pw_log_info("Sending header: code=0, bytes=%d", 8 + size_all);
     struct header h;
     h.code = 0;
     h.bytes = 8 + size_all;
     if (lsend(impl->fd_sink, (char*)(&h), 8) != 8) {
-        pw_log_warn("data_send: send failed");
+        pw_log_warn("data_send: send header failed");
         close(impl->fd_sink);
         impl->fd_sink = -1;
         goto error;
     } else {
-        //pw_log_debug("data_send: sent header ok bytes %d", size_all);
+        pw_log_info("data_send: sent header ok bytes %d", size_all);
     }
 
 	for (uint32_t i = 0; i < buf->buffer->n_datas; i++) {
