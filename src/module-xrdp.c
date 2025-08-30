@@ -975,10 +975,11 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	pw_properties_set(impl->stream_props_sink, PW_KEY_NODE_SUSPEND_ON_IDLE, "false");
 	pw_properties_set(impl->stream_props_sink, PW_KEY_NODE_PAUSE_ON_IDLE, "false");
 	
-	// Make this the default sink
+	// Make this the default sink and act as its own driver
 	pw_properties_set(impl->stream_props_sink, "node.nick", "XRDP");
 	pw_properties_set(impl->stream_props_sink, "priority.driver", "1000");
 	pw_properties_set(impl->stream_props_sink, "priority.session", "1000");
+	pw_properties_set(impl->stream_props_sink, "node.driver", "true");
 
 	parse_audio_info(impl->stream_props_sink, &impl->info);
 
