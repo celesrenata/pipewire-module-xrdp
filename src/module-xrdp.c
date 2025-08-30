@@ -345,6 +345,7 @@ static const struct pw_registry_events registry_events = {
 	.global = registry_event_global,
 };
 
+static void stream_state_changed_sink(void *d, enum pw_stream_state old,
 		enum pw_stream_state state, const char *error)
 {
 	struct impl *impl = d;
