@@ -330,14 +330,11 @@ static void registry_event_global(void *data, uint32_t id, uint32_t permissions,
 	
 	if (spa_streq(type, PW_TYPE_INTERFACE_Link)) {
 		const char *input_node = spa_dict_lookup(props, "link.input.node");
-		if (input_node) {
+		if (input_node && impl->stream_sink) {
 			uint32_t node_id = pw_stream_get_node_id(impl->stream_sink);
-			if (node_id != SPA_ID_INVALID && atoi(input_node) == node_id) {
+			if (node_id != SPA_ID_INVALID && (uint32_t)atoi(input_node) == node_id) {
 				pw_log_info("Link created to XRDP sink, forcing node to running state");
-				struct pw_impl_node *node = pw_stream_get_node(impl->stream_sink);
-				if (node) {
-					pw_impl_node_set_state(node, PW_NODE_STATE_RUNNING);
-				}
+				pw_stream_set_active(impl->stream_sink, true);
 			}
 		}
 	}
@@ -359,15 +356,7 @@ static const struct pw_registry_events registry_events = {
 		break;
 	case PW_STREAM_STATE_PAUSED:
 		// Don't close sink on PAUSED - this is a normal state
-		pw_log_info("Stream PAUSED - forcing underlying node to running state");
-		{
-			// Get the underlying node and force it to running state
-			struct pw_impl_node *node = pw_stream_get_node(impl->stream_sink);
-			if (node) {
-				pw_impl_node_set_state(node, PW_NODE_STATE_RUNNING);
-				pw_log_info("Forced node to RUNNING state");
-			}
-		}
+		pw_log_info("Stream PAUSED - stream is ready for connections");
 		pw_stream_set_active(impl->stream_sink, true);
 		break;
 	case PW_STREAM_STATE_STREAMING:
@@ -758,6 +747,7 @@ static void impl_destroy(struct impl *impl)
 	if (impl->registry) {
 		spa_hook_remove(&impl->registry_listener);
 		pw_proxy_destroy((struct pw_proxy*)impl->registry);
+		impl->registry = NULL;
 	}
 
 	if (impl->stream_sink)
