@@ -332,8 +332,12 @@ static void stream_state_changed_sink(void *d, enum pw_stream_state old,
 		break;
 	case PW_STREAM_STATE_PAUSED:
 		// Don't close sink on PAUSED - this is a normal state
+		// Try to activate the stream to transition to STREAMING
+		pw_log_info("Stream PAUSED, attempting to activate");
+		pw_stream_set_active(impl->stream_sink, true);
 		break;
 	case PW_STREAM_STATE_STREAMING:
+		pw_log_info("Stream now STREAMING - audio should work");
 		break;
 	default:
 		break;
