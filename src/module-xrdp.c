@@ -266,6 +266,17 @@ static int get_display_num_from_display(const char *display_text) {
     return atoi(disp);
 }
 
+static int lsend(int fd, char *data, int bytes) {
+    int sent = 0;
+    while (sent < bytes) {
+        int error = send(fd, data + sent, bytes - sent, MSG_NOSIGNAL);
+        if (error < 1)
+            return error;
+        sent += error;
+    }
+    return sent;
+}
+
 static int close_send_sink(struct impl *impl) {
     pw_log_info("close_send_sink");
     if (impl->fd_sink != -1) {
@@ -282,8 +293,6 @@ static int close_send_sink(struct impl *impl) {
     }
     return 8;
 }
-
-static int lsend(int fd, char *data, int bytes) {
     int sent = 0;
     while (sent < bytes) {
         int error = send(fd, data + sent, bytes - sent, MSG_NOSIGNAL);
@@ -305,24 +314,7 @@ static int lrecv(int fd, char *data, int bytes) {
     return recved;
 }
 
-static int close_send_sink(struct impl *impl) {
-    pw_log_info("close_send_sink");
-    if (impl->fd_sink != -1) {
-		struct header h;
-		h.code = 1;
-		h.bytes = 8;
-	    if (lsend(impl->fd_sink, (char*)(&h), 8) != 8) {
-    	    pw_log_debug("close_send: send failed");
-        	close(impl->fd_sink);
-	        impl->fd_sink = -1;
-    	    return 0;
-	    } else {
-    	    pw_log_debug("close_send: sent header ok");
-		}
-    }
 
-    return 8;
-}
 
 static int close_send_source(struct impl *impl) {
     pw_log_info("close_send_source");
