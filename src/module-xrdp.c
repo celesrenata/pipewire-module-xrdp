@@ -183,6 +183,9 @@ struct impl {
 	struct pw_core *core;  // common
 	struct spa_hook core_proxy_listener;  // common
 	struct spa_hook core_listener;  // common
+	
+	struct pw_registry *registry;
+	struct spa_hook registry_listener;
 
 	char *filename_sink;
 	char *filename_source;
@@ -320,7 +323,31 @@ static int close_send_source(struct impl *impl) {
     return 8;
 }
 
-static void stream_state_changed_sink(void *d, enum pw_stream_state old,
+static void registry_event_global(void *data, uint32_t id, uint32_t permissions,
+		const char *type, uint32_t version, const struct spa_dict *props)
+{
+	struct impl *impl = data;
+	
+	if (spa_streq(type, PW_TYPE_INTERFACE_Link)) {
+		const char *input_node = spa_dict_lookup(props, "link.input.node");
+		if (input_node) {
+			uint32_t node_id = pw_stream_get_node_id(impl->stream_sink);
+			if (node_id != SPA_ID_INVALID && atoi(input_node) == node_id) {
+				pw_log_info("Link created to XRDP sink, forcing node to running state");
+				struct pw_impl_node *node = pw_stream_get_node(impl->stream_sink);
+				if (node) {
+					pw_impl_node_set_state(node, PW_NODE_STATE_RUNNING);
+				}
+			}
+		}
+	}
+}
+
+static const struct pw_registry_events registry_events = {
+	PW_VERSION_REGISTRY_EVENTS,
+	.global = registry_event_global,
+};
+
 		enum pw_stream_state state, const char *error)
 {
 	struct impl *impl = d;
@@ -728,6 +755,11 @@ static void impl_destroy(struct impl *impl)
     close_send_sink(impl);
     close_send_source(impl);
 
+	if (impl->registry) {
+		spa_hook_remove(&impl->registry_listener);
+		pw_proxy_destroy((struct pw_proxy*)impl->registry);
+	}
+
 	if (impl->stream_sink)
 		pw_stream_destroy(impl->stream_sink);
 	if (impl->core && impl->do_disconnect)
@@ -1057,6 +1089,12 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 			&core_events, impl);
 
 	set_socket_path(impl);
+
+	// Set up registry to monitor for link creation
+	impl->registry = pw_core_get_registry(impl->core, PW_VERSION_REGISTRY, 0);
+	if (impl->registry) {
+		pw_registry_add_listener(impl->registry, &impl->registry_listener, &registry_events, impl);
+	}
 
   	if ((res = create_stream(impl)) < 0)
 		goto error;
