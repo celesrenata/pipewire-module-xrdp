@@ -532,10 +532,12 @@ static void playback_stream_process(void *data)
         offs = SPA_MIN(d->chunk->offset, d->maxsize);
         size = SPA_MIN(d->chunk->size, d->maxsize - offs);
 
+        pw_log_info("Sending audio data chunk %d: size=%d", i, size);
         written = lsend(impl->fd_sink, SPA_MEMBER(d->data, offs, void), size);
         written_all += written;
+        pw_log_info("Sent audio data chunk %d: written=%ld", i, written);
         if (written != size) {
-            pw_log_warn("Failed to write to xrdp sink");
+            pw_log_warn("Failed to write to xrdp sink: written=%ld expected=%d", written, size);
             close(impl->fd_sink);
             impl->fd_sink = -1;
             goto error;
