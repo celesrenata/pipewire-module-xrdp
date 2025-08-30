@@ -153,7 +153,7 @@ PW_LOG_TOPIC_STATIC(mod_topic, "mod." NAME);
 			"[ source.stream.props=<properties for source> ] "
 
 
-/* commands to xrdp_chansrv_audio_in_socket (xrdp/sesman/chansrv/sound.h)*/
+/* commands to xrdp_chansrv_audio_out_socket (xrdp/sesman/chansrv/sound.h)*/
 #define PA_CMD_START_REC    1
 #define PA_CMD_STOP_REC     2
 #define PA_CMD_SEND_DATA    3
@@ -466,7 +466,7 @@ static void set_socket_path(struct impl *impl) {
     socket_name = getenv("XRDP_PULSE_SINK_SOCKET");
     if (socket_name == NULL || socket_name[0] == '\0') {
 		snprintf(default_socket_name, sizeof(default_socket_name)-1,
-			"xrdp_chansrv_audio_in_socket_%d", impl->display_num);
+			"xrdp_chansrv_audio_out_socket_%d", impl->display_num);
        	socket_name = default_socket_name;
    	}
 	snprintf(default_socket_path, sizeof(default_socket_path)-1, "%s/%s", socket_dir, socket_name);
@@ -479,7 +479,7 @@ static void set_socket_path(struct impl *impl) {
     socket_name = getenv("XRDP_PULSE_SOURCE_SOCKET");
     if (socket_name == NULL || socket_name[0] == '\0') {
 		snprintf(default_socket_name, sizeof(default_socket_name)-1,
-			"xrdp_chansrv_audio_in_socket_%d", impl->display_num);
+			"xrdp_chansrv_audio_out_socket_%d", impl->display_num);
        	socket_name = default_socket_name;
    	}
 	snprintf(default_socket_path, sizeof(default_socket_path)-1, "%s/%s", socket_dir, socket_name);
@@ -559,21 +559,18 @@ static void playback_stream_process(void *data)
         goto error;
     }
     
-    /* Send format selection handshake first time only */
-    static int format_sent = 0;
-    if (!format_sent) {
-        uint32_t format_selection = 0; /* Select format 0 (44100Hz) */
-        pw_log_info("Sending format selection: format=0 (44100Hz)");
-        if (lsend(impl->fd_sink, (char*)&format_selection, 4) == 4) {
-            format_sent = 1;
-            pw_log_info("Format selection sent successfully");
-        } else {
-            pw_log_warn("Failed to send format selection");
-        }
+    /* Send header first like original code: h.code = 0; h.bytes = 8 + size_all; */
+    struct header h;
+    h.code = 0;
+    h.bytes = 8 + size_all;
+    if (lsend(impl->fd_sink, (char*)(&h), 8) != 8) {
+        pw_log_warn("data_send: send header failed");
+        close(impl->fd_sink);
+        impl->fd_sink = -1;
+        goto error;
+    } else {
+        pw_log_info("data_send: sent header ok bytes %d", size_all);
     }
-    
-    /* Send raw PCM audio data directly to chansrv */
-    pw_log_info("Sending raw PCM audio data: %d bytes", size_all);
 
 	for (uint32_t i = 0; i < buf->buffer->n_datas; i++) {
         uint32_t size, offs;
