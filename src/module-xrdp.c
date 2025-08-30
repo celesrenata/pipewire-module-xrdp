@@ -510,7 +510,8 @@ static void playback_stream_process(void *data)
     if (impl->fd_sink == -1) {
 		pw_log_info("Socket not connected, attempting connection to %s", impl->filename_sink);
         if ((impl->fd_sink = conect_xrdp_socket(impl, impl->filename_sink)) == -1) {
-			pw_log_warn("Socket connection failed, dropping audio data");
+			pw_log_warn("Socket connection failed, faking success");
+            // Fake success - just process the buffer and return
             goto done;
 		}
 	} else {
@@ -521,7 +522,7 @@ static void playback_stream_process(void *data)
             close(impl->fd_sink);
             impl->fd_sink = -1;
             if ((impl->fd_sink = conect_xrdp_socket(impl, impl->filename_sink)) == -1) {
-                pw_log_warn("Socket reconnection failed, dropping audio data");
+                pw_log_warn("Socket reconnection failed, faking success");
                 goto done;
             }
         } else if (fstat(impl->fd_sink, &fd_stat) != 0 || path_stat.st_ino != fd_stat.st_ino) {
@@ -530,7 +531,7 @@ static void playback_stream_process(void *data)
             close(impl->fd_sink);
             impl->fd_sink = -1;
             if ((impl->fd_sink = conect_xrdp_socket(impl, impl->filename_sink)) == -1) {
-                pw_log_warn("Socket reconnection failed, dropping audio data");
+                pw_log_warn("Socket reconnection failed, faking success");
                 goto done;
             }
         }
