@@ -1030,7 +1030,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	copy_props(impl->stream_props_sink, props, PW_KEY_NODE_NETWORK);
 	copy_props(impl->stream_props_sink, props, PW_KEY_MEDIA_CLASS);
 
-	// Set proper port names for sink (playback)
+	// Set proper port names for sink (playback) - must be set on stream properties
 	pw_properties_set(impl->stream_props_sink, "port.name.prefix", "playback");
 	
 	// Force the node to always process and never suspend
