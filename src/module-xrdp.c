@@ -362,7 +362,36 @@ static void stream_state_changed_source(void *d, enum pw_stream_state old,
     pw_log_debug("stream_state_changed:%s", pw_stream_state_as_string (state));
 }
 
-static int conect_xrdp_socket(struct impl *impl, char *filename);
+static int conect_xrdp_socket(struct impl *impl, char *filename) {
+    struct sockaddr_un s = { 0 };
+    struct timespec tm;
+
+    if (impl->failed_connect_time != 0) {
+        clock_gettime(CLOCK_MONOTONIC, &tm);
+        //pw_log_debug("wait 1sec when connect error occurred. waiting %lld nS", (tm.tv_sec * 1000000000LL + tm.tv_nsec) - impl->failed_connect_time);
+        if ((tm.tv_sec * 1000000000LL + tm.tv_nsec) - impl->failed_connect_time < 1000000000LL) {
+            return -1;
+        }
+    }
+
+    /* connect to xrdp unix domain socket */
+    int fd = socket(PF_LOCAL, SOCK_STREAM, 0);
+    s.sun_family = AF_UNIX;
+    strncpy(s.sun_path, filename, sizeof(s.sun_path)-1);
+    pw_log_info("trying to connect to %s", s.sun_path);
+
+    if (connect(fd, (struct sockaddr *)&s, sizeof(struct sockaddr_un)) != 0) {
+        pw_log_debug("Connect failed");
+        close(fd);
+        clock_gettime(CLOCK_MONOTONIC, &tm);
+        impl->failed_connect_time = tm.tv_sec * 1000000000LL + tm.tv_nsec;
+        fd = -1;
+    } else {
+        impl->failed_connect_time = 0;
+        pw_log_info("Connected ok fd %d", fd);
+    }
+    return fd;
+}
 
 static void set_socket_path(struct impl *impl) {
 	const char *socket_path;
@@ -409,37 +438,6 @@ static void set_socket_path(struct impl *impl) {
 	if (impl->filename_sink) {
 		impl->fd_sink = conect_xrdp_socket(impl, impl->filename_sink);
 	}
-}
-
-static int conect_xrdp_socket(struct impl *impl, char *filename) {
-    struct sockaddr_un s = { 0 };
-    struct timespec tm;
-
-    if (impl->failed_connect_time != 0) {
-        clock_gettime(CLOCK_MONOTONIC, &tm);
-        //pw_log_debug("wait 1sec when connect error occurred. waiting %lld nS", (tm.tv_sec * 1000000000LL + tm.tv_nsec) - impl->failed_connect_time);
-        if ((tm.tv_sec * 1000000000LL + tm.tv_nsec) - impl->failed_connect_time < 1000000000LL) {
-            return -1;
-        }
-    }
-
-    /* connect to xrdp unix domain socket */
-    int fd = socket(PF_LOCAL, SOCK_STREAM, 0);
-    s.sun_family = AF_UNIX;
-    strncpy(s.sun_path, filename, sizeof(s.sun_path)-1);
-    pw_log_info("trying to connect to %s", s.sun_path);
-
-    if (connect(fd, (struct sockaddr *)&s, sizeof(struct sockaddr_un)) != 0) {
-        pw_log_debug("Connect failed");
-        close(fd);
-        clock_gettime(CLOCK_MONOTONIC, &tm);
-        impl->failed_connect_time = tm.tv_sec * 1000000000LL + tm.tv_nsec;
-        fd = -1;
-    } else {
-        impl->failed_connect_time = 0;
-        pw_log_info("Connected ok fd %d", fd);
-    }
-    return fd;
 }
 
 static void playback_stream_process(void *data)
