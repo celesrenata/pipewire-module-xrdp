@@ -927,6 +927,9 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	copy_props(impl->stream_props_sink, props, PW_KEY_NODE_NETWORK);
 	copy_props(impl->stream_props_sink, props, PW_KEY_MEDIA_CLASS);
 
+	// Set proper port names for sink (playback)
+	pw_properties_set(impl->stream_props_sink, "port.name.prefix", "playback");
+
 	parse_audio_info(impl->stream_props_sink, &impl->info);
 
 	if (impl->info.rate != 0 &&
@@ -979,6 +982,9 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	copy_props(impl->stream_props_source, props, PW_KEY_NODE_VIRTUAL);
 	copy_props(impl->stream_props_source, props, PW_KEY_NODE_NETWORK);
 	copy_props(impl->stream_props_source, props, PW_KEY_MEDIA_CLASS);
+
+	// Set proper port names for source (capture)
+	pw_properties_set(impl->stream_props_source, "port.name.prefix", "capture");
 
 	parse_audio_info(impl->stream_props_source, &impl->info);
 
