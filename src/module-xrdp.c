@@ -397,14 +397,15 @@ static void set_socket_path(struct impl *impl) {
 	const char *socket_path;
     char default_socket_path[128];
     char default_socket_name[128];
+    char default_socket_dir[128];
 
     const char *socket_dir;
     const char *socket_name;
 
     socket_dir = getenv("XRDP_SOCKET_PATH");
     if (socket_dir == NULL || socket_dir[0] == '\0') {
-		snprintf(default_socket_path, sizeof(default_socket_path)-1, "/var/run/xrdp/%d", getuid());
-		socket_dir = default_socket_path;
+		snprintf(default_socket_dir, sizeof(default_socket_dir)-1, "/var/run/xrdp/%d", getuid());
+		socket_dir = default_socket_dir;
 	}
     impl->display_num = get_display_num_from_display(getenv("DISPLAY"));
 
