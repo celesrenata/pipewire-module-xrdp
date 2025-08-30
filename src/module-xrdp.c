@@ -510,29 +510,32 @@ static void playback_stream_process(void *data)
     if (impl->fd_sink == -1) {
 		pw_log_info("Socket not connected, attempting connection to %s", impl->filename_sink);
         if ((impl->fd_sink = conect_xrdp_socket(impl, impl->filename_sink)) == -1) {
-			pw_log_warn("Socket connection failed, faking success");
-            // Fake success - just process the buffer and return
+			pw_log_warn("Socket connection failed, dropping audio data");
             goto done;
 		}
 	} else {
-        /* Always check if XRDP created a new socket by comparing path inode to our connection inode */
-        struct stat path_stat, fd_stat;
-        if (stat(impl->filename_sink, &path_stat) != 0) {
-            pw_log_warn("Socket path %s no longer exists, reconnecting", impl->filename_sink);
-            close(impl->fd_sink);
-            impl->fd_sink = -1;
-            if ((impl->fd_sink = conect_xrdp_socket(impl, impl->filename_sink)) == -1) {
-                pw_log_warn("Socket reconnection failed, faking success");
-                goto done;
-            }
-        } else if (fstat(impl->fd_sink, &fd_stat) != 0 || path_stat.st_ino != fd_stat.st_ino) {
-            pw_log_warn("XRDP created new socket (path inode %lu != our inode %lu), reconnecting", 
-                       path_stat.st_ino, fd_stat.st_ino);
-            close(impl->fd_sink);
-            impl->fd_sink = -1;
-            if ((impl->fd_sink = conect_xrdp_socket(impl, impl->filename_sink)) == -1) {
-                pw_log_warn("Socket reconnection failed, faking success");
-                goto done;
+        /* Only check for socket changes occasionally to avoid triggering XRDP socket recreation */
+        static int check_counter = 0;
+        if (++check_counter > 100) { /* Check every ~100 audio buffers */
+            check_counter = 0;
+            struct stat path_stat, fd_stat;
+            if (stat(impl->filename_sink, &path_stat) != 0) {
+                pw_log_warn("Socket path %s no longer exists, reconnecting", impl->filename_sink);
+                close(impl->fd_sink);
+                impl->fd_sink = -1;
+                if ((impl->fd_sink = conect_xrdp_socket(impl, impl->filename_sink)) == -1) {
+                    pw_log_warn("Socket reconnection failed, dropping audio data");
+                    goto done;
+                }
+            } else if (fstat(impl->fd_sink, &fd_stat) != 0 || path_stat.st_ino != fd_stat.st_ino) {
+                pw_log_warn("XRDP created new socket (path inode %lu != our inode %lu), reconnecting", 
+                           path_stat.st_ino, fd_stat.st_ino);
+                close(impl->fd_sink);
+                impl->fd_sink = -1;
+                if ((impl->fd_sink = conect_xrdp_socket(impl, impl->filename_sink)) == -1) {
+                    pw_log_warn("Socket reconnection failed, dropping audio data");
+                    goto done;
+                }
             }
         }
 	}
