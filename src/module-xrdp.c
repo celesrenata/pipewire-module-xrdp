@@ -333,8 +333,10 @@ static void registry_event_global(void *data, uint32_t id, uint32_t permissions,
 		if (input_node && impl->stream_sink) {
 			uint32_t node_id = pw_stream_get_node_id(impl->stream_sink);
 			if (node_id != SPA_ID_INVALID && (uint32_t)atoi(input_node) == node_id) {
-				pw_log_info("Link created to XRDP sink, forcing node to running state");
+				pw_log_info("Link created to XRDP sink, forcing stream active and triggering process");
 				pw_stream_set_active(impl->stream_sink, true);
+				// Manually trigger the process function since the node might be suspended
+				pw_stream_trigger_process(impl->stream_sink);
 			}
 		}
 	}
