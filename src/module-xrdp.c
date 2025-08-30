@@ -498,8 +498,8 @@ static void playback_stream_process(void *data)
     if (impl->fd_sink == -1) {
 		pw_log_info("Socket not connected, attempting connection to %s", impl->filename_sink);
         if ((impl->fd_sink = conect_xrdp_socket(impl, impl->filename_sink)) == -1) {
-			pw_log_warn("Socket connection failed, going to error");
-            goto error;
+			pw_log_warn("Socket connection failed, dropping audio data");
+            goto done;
 		}
 	} else {
         /* Check if socket path still exists */
@@ -508,8 +508,8 @@ static void playback_stream_process(void *data)
             close(impl->fd_sink);
             impl->fd_sink = -1;
             if ((impl->fd_sink = conect_xrdp_socket(impl, impl->filename_sink)) == -1) {
-                pw_log_warn("Socket reconnection failed, going to error");
-                goto error;
+                pw_log_warn("Socket reconnection failed, dropping audio data");
+                goto done;
             }
         } else {
             /* Verify socket is still valid by checking if path exists and has same inode */
@@ -521,8 +521,8 @@ static void playback_stream_process(void *data)
                 close(impl->fd_sink);
                 impl->fd_sink = -1;
                 if ((impl->fd_sink = conect_xrdp_socket(impl, impl->filename_sink)) == -1) {
-                    pw_log_warn("Socket reconnection failed, going to error");
-                    goto error;
+                    pw_log_warn("Socket reconnection failed, dropping audio data");
+                    goto done;
                 }
             }
         }
