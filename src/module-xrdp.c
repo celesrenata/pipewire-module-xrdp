@@ -413,17 +413,29 @@ static int conect_xrdp_socket(struct impl *impl, char *filename) {
 
     /* connect to xrdp unix domain socket */
     int fd = socket(PF_LOCAL, SOCK_STREAM, 0);
+    
+    /* Make socket non-blocking to prevent hanging */
+    int flags = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    
     s.sun_family = AF_UNIX;
     strncpy(s.sun_path, filename, sizeof(s.sun_path)-1);
     pw_log_info("trying to connect to %s", s.sun_path);
 
     if (connect(fd, (struct sockaddr *)&s, sizeof(struct sockaddr_un)) != 0) {
-        pw_log_warn("Connect failed: %s", strerror(errno));
-        close(fd);
-        clock_gettime(CLOCK_MONOTONIC, &tm);
-        impl->failed_connect_time = tm.tv_sec * 1000000000LL + tm.tv_nsec;
-        fd = -1;
+        if (errno == EINPROGRESS) {
+            /* Connection in progress - for unix sockets this usually means success */
+            fcntl(fd, F_SETFL, flags); /* Set back to blocking for data operations */
+        } else {
+            pw_log_warn("Connect failed: %s", strerror(errno));
+            close(fd);
+            clock_gettime(CLOCK_MONOTONIC, &tm);
+            impl->failed_connect_time = tm.tv_sec * 1000000000LL + tm.tv_nsec;
+            fd = -1;
+        }
     } else {
+        /* Connected immediately */
+        fcntl(fd, F_SETFL, flags); /* Set back to blocking for data operations */
         impl->failed_connect_time = 0;
         struct stat st;
         if (fstat(fd, &st) == 0) {
