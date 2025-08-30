@@ -293,6 +293,8 @@ static int close_send_sink(struct impl *impl) {
     }
     return 8;
 }
+
+static int lsend(int fd, char *data, int bytes) {
     int sent = 0;
     while (sent < bytes) {
         int error = send(fd, data + sent, bytes - sent, MSG_NOSIGNAL);
