@@ -398,10 +398,17 @@ static int conect_xrdp_socket(struct impl *impl, char *filename) {
 
     if (impl->failed_connect_time != 0) {
         clock_gettime(CLOCK_MONOTONIC, &tm);
-        //pw_log_debug("wait 1sec when connect error occurred. waiting %lld nS", (tm.tv_sec * 1000000000LL + tm.tv_nsec) - impl->failed_connect_time);
         if ((tm.tv_sec * 1000000000LL + tm.tv_nsec) - impl->failed_connect_time < 1000000000LL) {
             return -1;
         }
+    }
+
+    /* Check if socket exists first */
+    if (access(filename, F_OK) != 0) {
+        pw_log_warn("Socket %s does not exist, cannot connect", filename);
+        clock_gettime(CLOCK_MONOTONIC, &tm);
+        impl->failed_connect_time = tm.tv_sec * 1000000000LL + tm.tv_nsec;
+        return -1;
     }
 
     /* connect to xrdp unix domain socket */
@@ -411,7 +418,7 @@ static int conect_xrdp_socket(struct impl *impl, char *filename) {
     pw_log_info("trying to connect to %s", s.sun_path);
 
     if (connect(fd, (struct sockaddr *)&s, sizeof(struct sockaddr_un)) != 0) {
-        pw_log_debug("Connect failed");
+        pw_log_warn("Connect failed: %s", strerror(errno));
         close(fd);
         clock_gettime(CLOCK_MONOTONIC, &tm);
         impl->failed_connect_time = tm.tv_sec * 1000000000LL + tm.tv_nsec;
