@@ -333,17 +333,6 @@ static void stream_state_changed_sink(void *d, enum pw_stream_state old,
 	case PW_STREAM_STATE_PAUSED:
 		// Don't close sink on PAUSED - this is a normal state
 		pw_log_info("Stream PAUSED - forcing node to running state");
-		// Get the node ID and force it to running state
-		{
-			uint32_t node_id = pw_stream_get_node_id(impl->stream_sink);
-			if (node_id != SPA_ID_INVALID) {
-				struct pw_registry *registry = pw_core_get_registry(impl->core, PW_VERSION_REGISTRY, 0);
-				if (registry) {
-					// Send Start command to the node
-					pw_registry_destroy(registry);
-				}
-			}
-		}
 		pw_stream_set_active(impl->stream_sink, true);
 		break;
 	case PW_STREAM_STATE_STREAMING:
