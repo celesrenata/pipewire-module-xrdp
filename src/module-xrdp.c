@@ -481,6 +481,7 @@ static void playback_stream_process(void *data)
 	}
 
 	pw_log_info("Got buffer, checking socket connection fd_sink=%d", impl->fd_sink);
+	pw_log_info("Buffer n_datas=%d", buf->buffer->n_datas);
 
     if (impl->fd_sink == -1) {
 		pw_log_info("Socket not connected, attempting connection to %s", impl->filename_sink);
@@ -497,9 +498,12 @@ static void playback_stream_process(void *data)
 
         offs = SPA_MIN(d->chunk->offset, d->maxsize);
         size = SPA_MIN(d->chunk->size, d->maxsize - offs);
+        
+        pw_log_info("Buffer %d: offset=%d size=%d maxsize=%d", i, offs, size, d->maxsize);
 
         size_all += size;
     }
+    pw_log_info("Total audio data size: %d bytes", size_all);
     struct header h;
     h.code = 0;
     h.bytes = 8 + size_all;
