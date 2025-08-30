@@ -266,6 +266,23 @@ static int get_display_num_from_display(const char *display_text) {
     return atoi(disp);
 }
 
+static int close_send_sink(struct impl *impl) {
+    pw_log_info("close_send_sink");
+    if (impl->fd_sink != -1) {
+        struct header h;
+        h.code = 1;  /* Close code */
+        h.bytes = 8;
+        if (lsend(impl->fd_sink, (char*)(&h), 8) != 8) {
+            pw_log_debug("close_send: send failed");
+        } else {
+            pw_log_debug("close_send: sent header ok");
+        }
+        close(impl->fd_sink);
+        impl->fd_sink = -1;
+    }
+    return 8;
+}
+
 static int lsend(int fd, char *data, int bytes) {
     int sent = 0;
     while (sent < bytes) {
@@ -354,11 +371,11 @@ static void stream_state_changed_sink(void *d, enum pw_stream_state old,
 	switch (state) {
 	case PW_STREAM_STATE_ERROR:
 	case PW_STREAM_STATE_UNCONNECTED:
-		//pw_impl_module_schedule_destroy(impl->module);
+		close_send_sink(impl);
 		unload_module(impl);
 		break;
 	case PW_STREAM_STATE_PAUSED:
-		// Don't close sink on PAUSED - this is a normal state
+		close_send_sink(impl);
 		pw_log_info("Stream PAUSED - stream is ready for connections");
 		pw_stream_set_active(impl->stream_sink, true);
 		break;
