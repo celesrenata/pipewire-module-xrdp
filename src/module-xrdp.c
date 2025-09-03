@@ -139,8 +139,8 @@
 #define DEFAULT_CHANNELS 2
 #define DEFAULT_POSITION "[ FL FR ]"
 
-PW_LOG_TOPIC_STATIC(mod_topic, "mod." NAME);
-#define PW_LOG_TOPIC_DEFAULT mod_topic
+/* PW_LOG_TOPIC_STATIC(mod_topic, "mod." NAME);
+#define PW_LOG_TOPIC_DEFAULT mod_topic */
 
 #define MODULE_USAGE	"[ remote.name=<remote> ] "				\
 			"[ sink.node.latency=<latency for sink> ] "		\
@@ -162,7 +162,7 @@ static const struct spa_dict_item module_props[] = {
 	{ PW_KEY_MODULE_AUTHOR, "Wim Taymans <wim.taymans@gmail.com>" },
 	{ PW_KEY_MODULE_DESCRIPTION, "Create a xrdp pipewire interface" },
 	{ PW_KEY_MODULE_USAGE, MODULE_USAGE },
-	{ PW_KEY_MODULE_VERSION, pw_get_headers_version() },
+	{ PW_KEY_MODULE_VERSION, "1.0.5" },
 };
 
 struct impl {
@@ -970,7 +970,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	const char *str;
 	int res;
 
-	PW_LOG_TOPIC_INIT(mod_topic);
+	/* PW_LOG_TOPIC_INIT(mod_topic); */
 
 	impl = calloc(1, sizeof(struct impl));
 	if (impl == NULL)
