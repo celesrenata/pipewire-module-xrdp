@@ -35,10 +35,10 @@ AC_PROG_LN_S
 AC_PROG_MAKE_SET
 
 # Checks for libraries.
-PKG_CHECK_MODULES([PW], [libpipewire-0.3 >= 0.3.58], [],
-        [AC_MSG_ERROR([please install libpipewire-0.3-dev or pipewire-devel])])
+PKG_CHECK_MODULES([PW], [libpipewire-0.3 >= 1.0.5], [],
+        [AC_MSG_ERROR([please install libpipewire-dev >= 1.0.5 or pipewire-devel >= 1.0.5])])
 PKG_CHECK_MODULES([SPA], [libspa-0.2], [],
-        [AC_MSG_ERROR([please install libspa-0.2-dev or pipewire-devel])])
+        [AC_MSG_ERROR([please install libspa-dev >= 1.0.5 or pipewire-devel >= 1.0.5])])
 
 PW_MODDIR=`$PKG_CONFIG --variable=moduledir libpipewire-0.3`
 
@@ -65,11 +65,11 @@ AC_ARG_ENABLE(
         [Enable the alternate ps-cli command (yes/no/auto)])],
         [alt_pw_cli=$enableval], [alt_pw_cli=auto])
 
-# The alternative pw-cli is not needed for pipewire 0.3.59 and
+# The alternative pw-cli is not needed for pipewire 1.4 and
 # later.
 # See https://gitlab.freedesktop.org/pipewire/pipewire/-/issues/2709
 if test x$alt_pw_cli = xauto; then
-    if  $PKG_CONFIG --atleast-version 0.3.59 libpipewire-0.3; then
+    if  $PKG_CONFIG --atleast-version 1.0.5 libpipewire-0.3; then
         AC_MSG_NOTICE([The alternative pw-cli will not be used])
         alt_pw_cli=no
     else

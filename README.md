@@ -4,7 +4,7 @@ Thanks to @Hiero32 who contributed this module.
 
 This module allows xrdp to generate sound on a pipewire-based system.
 
-Pipewire versions 0.3.58 and later are supported.
+Pipewire versions 1.4.0 and later are supported.
 
 # Files
 ## Sources
@@ -28,7 +28,7 @@ Pipewire versions 0.3.58 and later are supported.
 sudo apt install git pkg-config autotools-dev libtool make gcc
 
 # Install dependencies
-sudo apt install libpipewire-0.3-dev libspa-0.2-dev
+sudo apt install libpipewire-dev libspa-dev
 ```
 
 ## Fedora
