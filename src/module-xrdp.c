@@ -926,13 +926,14 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	impl->max_error = 256.0f * impl->frame_size;
 	impl->corr = 1.0f;
 
-	/* Get the core from the module's context - no remote connection needed */
-	impl->core = pw_context_get_object(impl->context, PW_TYPE_INTERFACE_Core);
+	/* Get the core from the module's context */
+	impl->core = pw_context_connect_self(impl->context, NULL, 0);
 	if (impl->core == NULL) {
-		res = -ENOENT;
-		pw_log_error("can't get core from context");
+		res = -errno;
+		pw_log_error("can't connect to core: %m");
 		goto error;
 	}
+	impl->do_disconnect = true;
 
 	pw_proxy_add_listener((struct pw_proxy*)impl->core,
 			&impl->core_proxy_listener,
