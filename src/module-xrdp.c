@@ -3,7 +3,7 @@
 /* SPDX-FileCopyrightText: Copyright © 2022 Wim Taymans */
 /* SPDX-License-Identifier: MIT */
 
-#include "config.h"
+#include "config_ac.h"
 
 #include <string.h>
 #include <stdio.h>
