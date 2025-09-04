@@ -638,9 +638,9 @@ static int create_fifo(struct impl *impl)
 		goto error;
 	}
 
-	if (!S_ISFIFO(st.st_mode)) {
+	if (!S_ISFIFO(st.st_mode) && !S_ISSOCK(st.st_mode)) {
 		res = -EINVAL;
-		pw_log_error("'%s' is not a FIFO.", filename);
+		pw_log_error("'%s' is not a FIFO or socket.", filename);
 		goto error;
 	}
 	impl->socket = pw_loop_add_io(impl->data_loop, fd,
@@ -657,8 +657,9 @@ static int create_fifo(struct impl *impl)
 		goto error;
 	}
 
-	pw_log_info("%s fifo '%s' with format:%s channels:%d rate:%d",
+	pw_log_info("%s %s '%s' with format:%s channels:%d rate:%d",
 			impl->direction == PW_DIRECTION_OUTPUT ? "reading from" : "writing to",
+			S_ISFIFO(st.st_mode) ? "fifo" : "socket",
 			filename,
 			spa_debug_type_find_name(spa_type_audio_format, impl->info.format),
 			impl->info.channels, impl->info.rate);
