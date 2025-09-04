@@ -2,6 +2,7 @@ AC_PREREQ([2.69])
 AC_INIT([pipewire-module-xrdp], [0.1], [celes@celestium.life])
 AM_INIT_AUTOMAKE([-Wall -Werror foreign])
 AC_PROG_CC
+AM_PROG_AR
 AC_PROG_LIBTOOL
 AC_CONFIG_HEADERS([config_ac.h])
 AC_CONFIG_FILES([
