@@ -929,13 +929,8 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	/* Get the core from the module's context - no remote connection needed */
 	impl->core = pw_context_get_object(impl->context, PW_TYPE_INTERFACE_Core);
 	if (impl->core == NULL) {
-		/* Create a local core connection */
-		impl->core = pw_context_connect(impl->context, NULL, 0);
-		impl->do_disconnect = true;
-	}
-	if (impl->core == NULL) {
-		res = -errno;
-		pw_log_error("can't connect: %m");
+		res = -ENOENT;
+		pw_log_error("can't get core from context");
 		goto error;
 	}
 
