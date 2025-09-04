@@ -1128,7 +1128,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 		goto error;
 	}
 
-	impl->core = pw_context_get_object(impl->context, "PipeWire:Interface:Core");
+	impl->core = pw_context_get_object(impl->context, PW_TYPE_INTERFACE_Core);
 	if (impl->core == NULL) {
 		str = pw_properties_get(props, PW_KEY_REMOTE_NAME);
 		impl->core = pw_context_connect(impl->context,
