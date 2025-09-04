@@ -926,14 +926,11 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	impl->max_error = 256.0f * impl->frame_size;
 	impl->corr = 1.0f;
 
+	/* Get the core from the module's context - no remote connection needed */
 	impl->core = pw_context_get_object(impl->context, PW_TYPE_INTERFACE_Core);
 	if (impl->core == NULL) {
-		str = pw_properties_get(props, PW_KEY_REMOTE_NAME);
-		impl->core = pw_context_connect(impl->context,
-				pw_properties_new(
-					PW_KEY_REMOTE_NAME, str,
-					NULL),
-				0);
+		/* Create a local core connection */
+		impl->core = pw_context_connect(impl->context, NULL, 0);
 		impl->do_disconnect = true;
 	}
 	if (impl->core == NULL) {
