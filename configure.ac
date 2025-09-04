@@ -10,15 +10,15 @@ AC_CONFIG_FILES([
  src/Makefile
 ])
 
-# Check for pipewire 1.4
-PKG_CHECK_MODULES([PIPEWIRE], [libpipewire-1.4 >= 1.4.0])
-PKG_CHECK_MODULES([SPA], [libspa-1.4 >= 1.4.0])
+# Check for pipewire (still uses 0.3 package name in 1.4.x)
+PKG_CHECK_MODULES([PIPEWIRE], [libpipewire-0.3 >= 1.4.0])
+PKG_CHECK_MODULES([SPA], [libspa-0.2 >= 0.2.0])
 
 # Get pipewire module directory
 AC_ARG_WITH([pipewire-moduledir],
     AS_HELP_STRING([--with-pipewire-moduledir=DIR], [Directory for pipewire modules]),
     [pipewire_moduledir=$withval],
-    [pipewire_moduledir=`$PKG_CONFIG --variable=moduledir libpipewire-1.4`])
+    [pipewire_moduledir=`$PKG_CONFIG --variable=moduledir libpipewire-0.3`])
 AC_SUBST([pipewire_moduledir])
 
 AC_OUTPUT
