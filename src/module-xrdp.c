@@ -153,6 +153,7 @@ static const struct spa_dict_item module_props[] = {
 	{ PW_KEY_MODULE_USAGE, MODULE_USAGE },
 	{ PW_KEY_MODULE_VERSION, PACKAGE_VERSION },
 };
+
 struct impl {
 	struct pw_context *context;
 	struct pw_loop *main_loop;
@@ -196,127 +197,6 @@ struct impl {
 	uint32_t target_buffer;
 
 	struct spa_io_position *position;
-
-	struct spa_dll dll;
-	float max_error;
-	double corr;
-
-	uint64_t next_time;
-	unsigned int have_sync:1;
-	unsigned int underrun:1;
-};
-
-static uint64_t get_time_ns(struct impl *impl)
-{
-	struct timespec now;
-	if (spa_system_clock_gettime(impl->data_loop->system, CLOCK_MONOTONIC, &now) < 0)
-		return 0;
-	return SPA_TIMESPEC_TO_NSEC(&now);
-}
-
-static int set_timeout(struct impl *impl, uint64_t time)
-{
-	struct timespec timeout, interval;
-	timeout.tv_sec = time / SPA_NSEC_PER_SEC;
-	timeout.tv_nsec = time % SPA_NSEC_PER_SEC;
-	interval.tv_sec = 0;
-	interval.tv_nsec = 0;
-	pw_loop_update_timer(impl->data_loop,
-                                impl->timer, &timeout, &interval, true);
-	return 0;
-}
-
-static void on_timeout(void *d, uint64_t expirations)
-{
-	struct impl *impl = d;
-	uint64_t duration, current_time;
-	uint32_t rate, index;
-	int32_t avail;
-	struct spa_io_position *pos = impl->position;
-
-	if (SPA_LIKELY(pos)) {
-		duration = pos->clock.target_duration;
-		rate = pos->clock.target_rate.denom;
-	} else {
-		duration = 1024;
-		rate = 48000;
-	}
-	pw_log_debug("timeout %"PRIu64, duration);
-
-	current_time = impl->next_time;
-	impl->next_time += (uint64_t)(duration / impl->corr * 1e9 / rate);
-	avail = spa_ringbuffer_get_read_index(&impl->ring, &index);
-
-	if (SPA_LIKELY(pos)) {
-                pos->clock.nsec = current_time;
-                pos->clock.rate = pos->clock.target_rate;
-                pos->clock.position += pos->clock.duration;
-                pos->clock.duration = pos->clock.target_duration;
-                pos->clock.delay = SPA_SCALE32_UP(avail, rate, impl->info.rate);
-                pos->clock.rate_diff = impl->corr;
-                pos->clock.next_nsec = impl->next_time;
-        }
-	set_timeout(impl, impl->next_time);
-
-	pw_stream_trigger_process(impl->stream);
-}
-
-static void stream_destroy(void *d)
-{
-	struct impl *impl = d;
-	spa_hook_remove(&impl->stream_listener);
-	impl->stream = NULL;
-}
-
-static void stream_state_changed(void *d, enum pw_stream_state old,
-		enum pw_stream_state state, const char *error)
-{
-	struct impl *impl = d;
-	switch (state) {
-	case PW_STREAM_STATE_ERROR:
-	case PW_STREAM_STATE_UNCONNECTED:
-		pw_impl_module_schedule_destroy(impl->module);
-		break;
-	case PW_STREAM_STATE_PAUSED:
-		if (impl->direction == PW_DIRECTION_OUTPUT) {
-			pw_loop_update_io(impl->data_loop, impl->socket, impl->paused ? SPA_IO_IN : 0);
-			set_timeout(impl, 0);
-		}
-		break;
-	case PW_STREAM_STATE_STREAMING:
-		if (impl->direction == PW_DIRECTION_OUTPUT) {
-			pw_loop_update_io(impl->data_loop, impl->socket, SPA_IO_IN);
-			impl->driving = pw_stream_is_driving(impl->stream);
-			if (impl->driving) {
-				impl->next_time = get_time_ns(impl);
-				set_timeout(impl, impl->next_time);
-			}
-		}
-		break;
-	default:
-		break;
-	}
-}
-
-static int do_pause(struct spa_loop *loop, bool async, uint32_t seq, const void *data,
-		size_t size, void *user_data)
-{
-	struct impl *impl = user_data;
-	const bool *paused = data;
-	pw_log_info("set paused: %d", *paused);
-	impl->paused = *paused;
-	pw_stream_set_active(impl->stream, !*paused);
-	return 0;
-}
-
-static void pause_stream(struct impl *impl, bool paused)
-{
-	if (!impl->may_pause)
-		return;
-	if (impl->direction == PW_DIRECTION_INPUT)
-		pw_loop_update_io(impl->data_loop, impl->socket, paused ? SPA_IO_OUT : 0);
-	pw_loop_invoke(impl->main_loop, do_pause, 1, &paused, sizeof(bool), false, impl);
-}
 
 	struct spa_dll dll;
 	float max_error;
