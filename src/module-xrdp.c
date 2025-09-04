@@ -11,6 +11,8 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/uio.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -610,38 +612,58 @@ static int create_fifo(struct impl *impl)
 			DEFAULT_CAPTURE_FILENAME :
 			DEFAULT_PLAYBACK_FILENAME;
 
-	if (mkfifo(filename, 0666) < 0) {
-		if (errno != EEXIST) {
+	/* Check if file exists and is a socket */
+	if (stat(filename, &st) == 0 && S_ISSOCK(st.st_mode)) {
+		/* Connect to Unix socket */
+		struct sockaddr_un addr;
+		
+		fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+		if (fd < 0) {
 			res = -errno;
-			pw_log_error("mkfifo('%s'): %s", filename, spa_strerror(res));
+			pw_log_error("socket(): %s", spa_strerror(res));
+			goto error;
+		}
+		
+		memset(&addr, 0, sizeof(addr));
+		addr.sun_family = AF_UNIX;
+		strncpy(addr.sun_path, filename, sizeof(addr.sun_path) - 1);
+		
+		if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+			res = -errno;
+			pw_log_error("connect('%s'): %s", filename, spa_strerror(res));
 			goto error;
 		}
 	} else {
-		/*
-		 * Our umask is 077, so the pipe won't be created with the
-		 * requested permissions. Let's fix the permissions with chmod().
-		 */
-		if (chmod(filename, 0666) < 0)
-			pw_log_warn("chmod('%s'): %s", filename, spa_strerror(-errno));
-
-		do_unlink_fifo = true;
-	}
-	if ((fd = open(filename, O_RDWR | O_CLOEXEC | O_NONBLOCK, 0)) < 0) {
-		res = -errno;
-		pw_log_error("open('%s'): %s", filename, spa_strerror(res));
-		goto error;
-	}
-
-	if (fstat(fd, &st) < 0) {
-		res = -errno;
-		pw_log_error("fstat('%s'): %s", filename, spa_strerror(res));
-		goto error;
-	}
-
-	if (!S_ISFIFO(st.st_mode) && !S_ISSOCK(st.st_mode)) {
-		res = -EINVAL;
-		pw_log_error("'%s' is not a FIFO or socket.", filename);
-		goto error;
+		/* Handle FIFO */
+		if (mkfifo(filename, 0666) < 0) {
+			if (errno != EEXIST) {
+				res = -errno;
+				pw_log_error("mkfifo('%s'): %s", filename, spa_strerror(res));
+				goto error;
+			}
+		} else {
+			if (chmod(filename, 0666) < 0)
+				pw_log_warn("chmod('%s'): %s", filename, spa_strerror(-errno));
+			do_unlink_fifo = true;
+		}
+		
+		if ((fd = open(filename, O_RDWR | O_CLOEXEC | O_NONBLOCK, 0)) < 0) {
+			res = -errno;
+			pw_log_error("open('%s'): %s", filename, spa_strerror(res));
+			goto error;
+		}
+		
+		if (fstat(fd, &st) < 0) {
+			res = -errno;
+			pw_log_error("fstat('%s'): %s", filename, spa_strerror(res));
+			goto error;
+		}
+		
+		if (!S_ISFIFO(st.st_mode)) {
+			res = -EINVAL;
+			pw_log_error("'%s' is not a FIFO.", filename);
+			goto error;
+		}
 	}
 	impl->socket = pw_loop_add_io(impl->data_loop, fd,
 			0, false, on_pipe_io, impl);
@@ -657,9 +679,12 @@ static int create_fifo(struct impl *impl)
 		goto error;
 	}
 
+	/* Determine if it's a socket by checking if we connected to one */
+	bool is_socket = (stat(filename, &st) == 0 && S_ISSOCK(st.st_mode));
+	
 	pw_log_info("%s %s '%s' with format:%s channels:%d rate:%d",
 			impl->direction == PW_DIRECTION_OUTPUT ? "reading from" : "writing to",
-			S_ISFIFO(st.st_mode) ? "fifo" : "socket",
+			is_socket ? "socket" : "fifo",
 			filename,
 			spa_debug_type_find_name(spa_type_audio_format, impl->info.format),
 			impl->info.channels, impl->info.rate);
