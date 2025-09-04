@@ -607,10 +607,21 @@ static int create_fifo(struct impl *impl)
 	bool do_unlink_fifo = false;
 	int fd = -1, res;
 
-	if ((filename = pw_properties_get(impl->props, "pipe.filename")) == NULL)
-		filename = impl->direction == PW_DIRECTION_INPUT ?
-			DEFAULT_CAPTURE_FILENAME :
-			DEFAULT_PLAYBACK_FILENAME;
+	if ((filename = pw_properties_get(impl->props, "pipe.filename")) == NULL) {
+		/* Check for XRDP socket paths */
+		if (impl->direction == PW_DIRECTION_INPUT) {
+			filename = pw_properties_get(impl->props, "source.socket.path");
+		} else {
+			filename = pw_properties_get(impl->props, "sink.socket.path");
+		}
+		
+		/* Fall back to default FIFO paths if no XRDP socket specified */
+		if (filename == NULL) {
+			filename = impl->direction == PW_DIRECTION_INPUT ?
+				DEFAULT_CAPTURE_FILENAME :
+				DEFAULT_PLAYBACK_FILENAME;
+		}
+	}
 
 	/* Check if file exists and is a socket */
 	if (stat(filename, &st) == 0 && S_ISSOCK(st.st_mode)) {
