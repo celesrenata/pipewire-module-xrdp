@@ -1,52 +1,22 @@
-/**
- * xrdp pipewire module
- *
- * This is a modified version of src/modules/module-pipe-tunnel.c
- * from pipewire 0.3.64
- */
+/* PipeWire */
+/* SPDX-FileCopyrightText: Copyright © 2021 Sanchayan Maity <sanchayan@asymptotic.io> */
+/* SPDX-FileCopyrightText: Copyright © 2022 Wim Taymans */
+/* SPDX-License-Identifier: MIT */
 
-/* PipeWire
- *
- * Copyright © 2021 Sanchayan Maity <sanchayan@asymptotic.io>
- * Copyright © 2022 Wim Taymans
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
+#include "config.h"
 
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/uio.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <signal.h>
 #include <limits.h>
 #include <math.h>
-#include <time.h>
-
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <sys/socket.h>
-#include <sys/un.h>
 
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
@@ -58,32 +28,44 @@
 #include <spa/param/audio/format-utils.h>
 #include <spa/param/latency-utils.h>
 #include <spa/param/audio/raw.h>
+#include <spa/param/audio/raw-json.h>
 
 #include <pipewire/impl.h>
 #include <pipewire/i18n.h>
 
-/** \page page_module_pipe_tunnel PipeWire Module: Unix Pipe Tunnel
+/** \page page_module_pipe_tunnel Unix Pipe Tunnel
  *
  * The pipe-tunnel module provides a source or sink that tunnels all audio to
- * a unix pipe.
+ * or from a unix pipe respectively.
+ *
+ * ## Module Name
+ *
+ * `libpipewire-module-pipe-tunnel`
  *
  * ## Module Options
  *
  * - `tunnel.mode`: the desired tunnel to create. (Default `playback`)
+ * - `tunnel.may-pause`: if the tunnel stream is allowed to pause on xrun
  * - `pipe.filename`: the filename of the pipe.
  * - `stream.props`: Extra properties for the local stream.
  *
  * When `tunnel.mode` is `capture`, a capture stream on the default source is
- * created. Samples read from the pipe will be the contents of the captured source.
+ * created. The samples captured from the source will be written to the pipe.
  *
- * When `tunnel.mode` is `sink`, a sink node is created. Samples read from the
- * pipe will be the samples played on the sink.
+ * When `tunnel.mode` is `sink`, a sink node is created. Samples played on the
+ * sink will be written to the pipe.
  *
  * When `tunnel.mode` is `playback`, a playback stream on the default sink is
- * created. Samples written to the pipe will be played on the sink.
+ * created. The samples read from the pipe will be played on the sink.
  *
- * When `tunnel.mode` is `source`, a source node is created. Samples written to
- * the pipe will be made available to streams connected to the source.
+ * When `tunnel.mode` is `source`, a source node is created. Samples read from
+ * the the pipe will be made available on the source.
+ *
+ * `tunnel.may-pause` allows the tunnel stream to become inactive (paused) when
+ * there is no data in the fifo or when the fifo is full. For `capture` and
+ * `playback` `tunnel.mode` this is by default true. For `source` and `sink`
+ * `tunnel.mode`, this is by default false. A paused stream will consume no
+ * CPU and will resume when the fifo becomes readable or writable again.
  *
  * When `pipe.filename` is not given, a default fifo in `/tmp/fifo_input` or
  * `/tmp/fifo_output` will be created that can be written and read respectively,
@@ -112,10 +94,13 @@
  * ## Example configuration of a pipe playback stream
  *
  *\code{.unparsed}
+ * # ~/.config/pipewire/pipewire.conf.d/my-pipe-tunnel.conf
+ *
  * context.modules = [
  * {   name = libpipewire-module-pipe-tunnel
  *     args = {
  *         tunnel.mode = playback
+ *         #tunnel.may-pause = true
  *         # Set the pipe name to tunnel to
  *         pipe.filename = "/tmp/fifo_output"
  *         #audio.format=<sample format>
@@ -132,579 +117,474 @@
  *\endcode
  */
 
-#define NAME "xrdp"
+#define NAME "pipe-tunnel"
+
+#define DEFAULT_CAPTURE_FILENAME	"/tmp/fifo_input"
+#define DEFAULT_PLAYBACK_FILENAME	"/tmp/fifo_output"
 
 #define DEFAULT_FORMAT "S16"
-#define DEFAULT_RATE 44100
-#define DEFAULT_CHANNELS 2
+#define DEFAULT_RATE 48000
 #define DEFAULT_POSITION "[ FL FR ]"
 
-/* PW_LOG_TOPIC_STATIC(mod_topic, "mod." NAME);
-#define PW_LOG_TOPIC_DEFAULT mod_topic */
+#define RINGBUFFER_SIZE		(1u << 22)
+#define RINGBUFFER_MASK		(RINGBUFFER_SIZE-1)
 
-#define MODULE_USAGE	"[ remote.name=<remote> ] "				\
-			"[ sink.node.latency=<latency for sink> ] "		\
-			"[ target.object=<remote node target name> ] "		\
-			"[ audio.format=<sample format> ] "			\
-			"[ audio.rate=<sample rate> ] "				\
-			"[ audio.channels=<number of channels> ] "		\
-			"[ audio.position=<channel map> ] "			\
-			"[ sink.stream.props=<properties for sink> ] "		\
-			"[ source.stream.props=<properties for source> ] "
+PW_LOG_TOPIC_STATIC(mod_topic, "mod." NAME);
+#define PW_LOG_TOPIC_DEFAULT mod_topic
 
+#define MODULE_USAGE	"( remote.name=<remote> ) "				\
+			"( node.latency=<latency as fraction> ) "		\
+			"( node.name=<name of the nodes> ) "			\
+			"( node.description=<description of the nodes> ) "	\
+			"( target.object=<remote node target name or serial> ) "\
+			"( audio.format=<sample format> ) "			\
+			"( audio.rate=<sample rate> ) "				\
+			"( audio.channels=<number of channels> ) "		\
+			"( audio.position=<channel map> ) "			\
+			"( tunnel.mode=capture|playback|sink|source )"		\
+			"( tunnel.may-pause=<bool, if the stream can pause> )"	\
+			"( pipe.filename=<filename> )"				\
+			"( stream.props=<properties> ) "
 
-/* commands to xrdp_chansrv_audio_out_socket (xrdp/sesman/chansrv/sound.h)*/
-#define PA_CMD_START_REC    1
-#define PA_CMD_STOP_REC     2
-#define PA_CMD_SEND_DATA    3
 
 static const struct spa_dict_item module_props[] = {
 	{ PW_KEY_MODULE_AUTHOR, "Wim Taymans <wim.taymans@gmail.com>" },
-	{ PW_KEY_MODULE_DESCRIPTION, "Create a xrdp pipewire interface" },
+	{ PW_KEY_MODULE_DESCRIPTION, "Create a UNIX pipe tunnel" },
 	{ PW_KEY_MODULE_USAGE, MODULE_USAGE },
-	{ PW_KEY_MODULE_VERSION, "1.0.5" },
+	{ PW_KEY_MODULE_VERSION, PACKAGE_VERSION },
 };
-
 struct impl {
-	struct pw_context *context;  // common
-	uint32_t destroy_work_id;  // common
+	struct pw_context *context;
+	struct pw_loop *main_loop;
+	struct pw_loop *data_loop;
 
-#define MODE_XRDP_SINK		1
-#define MODE_XRDP_SOURCE	2
-#define MODE_BOTH	(MODE_XRDP_SINK | MODE_XRDP_SOURCE)
+#define MODE_PLAYBACK	0
+#define MODE_CAPTURE	1
+#define MODE_SINK	2
+#define MODE_SOURCE	3
 	uint32_t mode;
-	struct pw_properties *props_sink;
-	struct pw_properties *props_source;
+	struct pw_properties *props;
 
-	struct pw_impl_module *module;  // common
+	struct pw_impl_module *module;
 
-	struct spa_hook module_listener;  // common
+	struct spa_hook module_listener;
 
-	struct pw_core *core;  // common
-	struct spa_hook core_proxy_listener;  // common
-	struct spa_hook core_listener;  // common
-	
-	struct pw_registry *registry;
-	struct spa_hook registry_listener;
+	struct pw_core *core;
+	struct spa_hook core_proxy_listener;
+	struct spa_hook core_listener;
 
-	char *filename_sink;
-	char *filename_source;
-	int fd_sink;
-	int fd_source;
-	uint64_t failed_connect_time;
+	char *filename;
+	unsigned int unlink_fifo;
+	int fd;
+	struct spa_source *socket;
+	struct spa_source *timer;
 
-	struct pw_properties *stream_props_sink;
-	struct pw_properties *stream_props_source;
-	struct pw_stream *stream_sink;
-	struct pw_stream *stream_source;
-	struct spa_hook stream_listener_sink;
-	struct spa_hook stream_listener_source;
-	struct spa_audio_info_raw info;  // common
-	uint32_t frame_size;  // only source
+	struct pw_properties *stream_props;
+	enum pw_direction direction;
+	struct pw_stream *stream;
+	struct spa_hook stream_listener;
+	struct spa_audio_info_raw info;
+	uint32_t frame_size;
 
-	unsigned int do_disconnect:1;  // common
-	uint32_t leftover_count;  // only source
-	uint8_t *leftover;  // only source
+	unsigned int do_disconnect:1;
+	unsigned int driving:1;
+	unsigned int may_pause:1;
+	unsigned int paused:1;
 
-	int want_src_data;  // only source
-	unsigned int unloading:1;  // common
-	struct pw_work_queue *work;  // common
-	int display_num; // for debug
+	struct spa_ringbuffer ring;
+	void *buffer;
+	uint32_t target_buffer;
+
+	struct spa_io_position *position;
+
+	struct spa_dll dll;
+	float max_error;
+	double corr;
+
+	uint64_t next_time;
+	unsigned int have_sync:1;
+	unsigned int underrun:1;
 };
 
-static void do_unload_module(void *obj, void *data, int res, uint32_t id)
+static uint64_t get_time_ns(struct impl *impl)
 {
-	struct impl *impl = data;
-	pw_impl_module_destroy(impl->module);
+	struct timespec now;
+	if (spa_system_clock_gettime(impl->data_loop->system, CLOCK_MONOTONIC, &now) < 0)
+		return 0;
+	return SPA_TIMESPEC_TO_NSEC(&now);
 }
 
-static void unload_module(struct impl *impl)
+static int set_timeout(struct impl *impl, uint64_t time)
 {
-	if (!impl->unloading) {
-		impl->unloading = true;
-		pw_work_queue_add(impl->work, impl, 0, do_unload_module, impl);
+	struct timespec timeout, interval;
+	timeout.tv_sec = time / SPA_NSEC_PER_SEC;
+	timeout.tv_nsec = time % SPA_NSEC_PER_SEC;
+	interval.tv_sec = 0;
+	interval.tv_nsec = 0;
+	pw_loop_update_timer(impl->data_loop,
+                                impl->timer, &timeout, &interval, true);
+	return 0;
+}
+
+static void on_timeout(void *d, uint64_t expirations)
+{
+	struct impl *impl = d;
+	uint64_t duration, current_time;
+	uint32_t rate, index;
+	int32_t avail;
+	struct spa_io_position *pos = impl->position;
+
+	if (SPA_LIKELY(pos)) {
+		duration = pos->clock.target_duration;
+		rate = pos->clock.target_rate.denom;
+	} else {
+		duration = 1024;
+		rate = 48000;
 	}
-}
+	pw_log_debug("timeout %"PRIu64, duration);
 
-static void stream_destroy_sink(void *d)
-{
-	struct impl *impl = d;
-	spa_hook_remove(&impl->stream_listener_sink);
-	impl->stream_sink = NULL;
-}
+	current_time = impl->next_time;
+	impl->next_time += (uint64_t)(duration / impl->corr * 1e9 / rate);
+	avail = spa_ringbuffer_get_read_index(&impl->ring, &index);
 
-static void stream_destroy_source(void *d)
-{
-	struct impl *impl = d;
-	spa_hook_remove(&impl->stream_listener_source);
-	impl->stream_source = NULL;
-}
-
-struct header {
-    uint32_t id;
-    uint32_t size;
-};
-
-static int get_display_num_from_display(const char *display_text) {
-    int mode = 0;
-    int disp_index = 0;
-    char disp[16] = { 0 };
-
-    if (display_text == NULL)
-        return 0;
-
-    for (size_t index = 0; display_text[index] != 0 && index < sizeof(disp) ; index++) {
-        if (display_text[index] == ':')
-            mode = 1;
-        else if (display_text[index] == '.')
-            break;
-        else if (mode == 1)
-            disp[disp_index++] = display_text[index];
-    }
-
-    disp[disp_index] = 0;
-    return atoi(disp);
-}
-
-static int lsend(int fd, char *data, int bytes) {
-    int sent = 0;
-    while (sent < bytes) {
-        int error = send(fd, data + sent, bytes - sent, MSG_NOSIGNAL);
-        if (error < 1)
-            return error;
-        sent += error;
-    }
-    return sent;
-}
-
-static int close_send_sink(struct impl *impl) {
-    pw_log_info("close_send_sink");
-    if (impl->fd_sink != -1) {
-        uint32_t header[2];
-        header[0] = htole32(1);  /* id = 1 (close) */
-        header[1] = htole32(8);  /* size = header only */
-        if (lsend(impl->fd_sink, (char*)header, 8) != 8) {
-            pw_log_debug("close_send: send failed");
-        } else {
-            pw_log_debug("close_send: sent header ok");
+	if (SPA_LIKELY(pos)) {
+                pos->clock.nsec = current_time;
+                pos->clock.rate = pos->clock.target_rate;
+                pos->clock.position += pos->clock.duration;
+                pos->clock.duration = pos->clock.target_duration;
+                pos->clock.delay = SPA_SCALE32_UP(avail, rate, impl->info.rate);
+                pos->clock.rate_diff = impl->corr;
+                pos->clock.next_nsec = impl->next_time;
         }
-        close(impl->fd_sink);
-        impl->fd_sink = -1;
-    }
-    return 8;
+	set_timeout(impl, impl->next_time);
+
+	pw_stream_trigger_process(impl->stream);
 }
 
-static int lrecv(int fd, char *data, int bytes) {
-    int recved = 0;
-    while (recved < bytes) {
-        int error = recv(fd, data + recved, bytes - recved, 0);
-        if (error < 1)
-            return error;
-        recved += error;
-    }
-    return recved;
-}
-
-
-
-static int close_send_source(struct impl *impl) {
-    pw_log_info("close_send_source");
-    if (impl->fd_source != -1) {
-		/* we don't want source data anymore */
-		char stop_rec[] = { 0, 0, 0, 0, 11, 0, 0, 0, PA_CMD_STOP_REC, 0, 0 };
-		if (lsend(impl->fd_source, stop_rec, 11) != 11) {
-			close(impl->fd_source);
-			impl->fd_source = -1;
-		}
-		impl->want_src_data = 0;
-		pw_log_debug("###### stopped recording");
-	}
-
-    return 8;
-}
-
-static void registry_event_global(void *data, uint32_t id, uint32_t permissions,
-		const char *type, uint32_t version, const struct spa_dict *props)
+static void stream_destroy(void *d)
 {
-	struct impl *impl = data;
-	
-	if (spa_streq(type, PW_TYPE_INTERFACE_Link)) {
-		const char *input_node = spa_dict_lookup(props, "link.input.node");
-		if (input_node && impl->stream_sink) {
-			uint32_t node_id = pw_stream_get_node_id(impl->stream_sink);
-			if (node_id != SPA_ID_INVALID && (uint32_t)atoi(input_node) == node_id) {
-				pw_log_info("Link created to XRDP sink, forcing stream active and triggering process");
-				pw_stream_set_active(impl->stream_sink, true);
-				// Manually trigger the process function since the node might be suspended
-				pw_stream_trigger_process(impl->stream_sink);
+	struct impl *impl = d;
+	spa_hook_remove(&impl->stream_listener);
+	impl->stream = NULL;
+}
+
+static void stream_state_changed(void *d, enum pw_stream_state old,
+		enum pw_stream_state state, const char *error)
+{
+	struct impl *impl = d;
+	switch (state) {
+	case PW_STREAM_STATE_ERROR:
+	case PW_STREAM_STATE_UNCONNECTED:
+		pw_impl_module_schedule_destroy(impl->module);
+		break;
+	case PW_STREAM_STATE_PAUSED:
+		if (impl->direction == PW_DIRECTION_OUTPUT) {
+			pw_loop_update_io(impl->data_loop, impl->socket, impl->paused ? SPA_IO_IN : 0);
+			set_timeout(impl, 0);
+		}
+		break;
+	case PW_STREAM_STATE_STREAMING:
+		if (impl->direction == PW_DIRECTION_OUTPUT) {
+			pw_loop_update_io(impl->data_loop, impl->socket, SPA_IO_IN);
+			impl->driving = pw_stream_is_driving(impl->stream);
+			if (impl->driving) {
+				impl->next_time = get_time_ns(impl);
+				set_timeout(impl, impl->next_time);
 			}
 		}
+		break;
+	default:
+		break;
 	}
 }
 
-static const struct pw_registry_events registry_events = {
-	PW_VERSION_REGISTRY_EVENTS,
-	.global = registry_event_global,
+static int do_pause(struct spa_loop *loop, bool async, uint32_t seq, const void *data,
+		size_t size, void *user_data)
+{
+	struct impl *impl = user_data;
+	const bool *paused = data;
+	pw_log_info("set paused: %d", *paused);
+	impl->paused = *paused;
+	pw_stream_set_active(impl->stream, !*paused);
+	return 0;
+}
+
+static void pause_stream(struct impl *impl, bool paused)
+{
+	if (!impl->may_pause)
+		return;
+	if (impl->direction == PW_DIRECTION_INPUT)
+		pw_loop_update_io(impl->data_loop, impl->socket, paused ? SPA_IO_OUT : 0);
+	pw_loop_invoke(impl->main_loop, do_pause, 1, &paused, sizeof(bool), false, impl);
+}
+
+	struct spa_dll dll;
+	float max_error;
+	double corr;
+
+	uint64_t next_time;
+	unsigned int have_sync:1;
+	unsigned int underrun:1;
 };
 
-static void stream_state_changed_sink(void *d, enum pw_stream_state old,
+static uint64_t get_time_ns(struct impl *impl)
+{
+	struct timespec now;
+	if (spa_system_clock_gettime(impl->data_loop->system, CLOCK_MONOTONIC, &now) < 0)
+		return 0;
+	return SPA_TIMESPEC_TO_NSEC(&now);
+}
+
+static int set_timeout(struct impl *impl, uint64_t time)
+{
+	struct timespec timeout, interval;
+	timeout.tv_sec = time / SPA_NSEC_PER_SEC;
+	timeout.tv_nsec = time % SPA_NSEC_PER_SEC;
+	interval.tv_sec = 0;
+	interval.tv_nsec = 0;
+	pw_loop_update_timer(impl->data_loop,
+                                impl->timer, &timeout, &interval, true);
+	return 0;
+}
+
+static void on_timeout(void *d, uint64_t expirations)
+{
+	struct impl *impl = d;
+	uint64_t duration, current_time;
+	uint32_t rate, index;
+	int32_t avail;
+	struct spa_io_position *pos = impl->position;
+
+	if (SPA_LIKELY(pos)) {
+		duration = pos->clock.target_duration;
+		rate = pos->clock.target_rate.denom;
+	} else {
+		duration = 1024;
+		rate = 48000;
+	}
+	pw_log_debug("timeout %"PRIu64, duration);
+
+	current_time = impl->next_time;
+	impl->next_time += (uint64_t)(duration / impl->corr * 1e9 / rate);
+	avail = spa_ringbuffer_get_read_index(&impl->ring, &index);
+
+	if (SPA_LIKELY(pos)) {
+                pos->clock.nsec = current_time;
+                pos->clock.rate = pos->clock.target_rate;
+                pos->clock.position += pos->clock.duration;
+                pos->clock.duration = pos->clock.target_duration;
+                pos->clock.delay = SPA_SCALE32_UP(avail, rate, impl->info.rate);
+                pos->clock.rate_diff = impl->corr;
+                pos->clock.next_nsec = impl->next_time;
+        }
+	set_timeout(impl, impl->next_time);
+
+	pw_stream_trigger_process(impl->stream);
+}
+
+static void stream_destroy(void *d)
+{
+	struct impl *impl = d;
+	spa_hook_remove(&impl->stream_listener);
+	impl->stream = NULL;
+}
+
+static void stream_state_changed(void *d, enum pw_stream_state old,
 		enum pw_stream_state state, const char *error)
 {
 	struct impl *impl = d;
 	switch (state) {
 	case PW_STREAM_STATE_ERROR:
 	case PW_STREAM_STATE_UNCONNECTED:
-		close_send_sink(impl);
-		unload_module(impl);
+		pw_impl_module_schedule_destroy(impl->module);
 		break;
 	case PW_STREAM_STATE_PAUSED:
-		close_send_sink(impl);
-		pw_log_info("Stream PAUSED - stream is ready for connections");
-		pw_stream_set_active(impl->stream_sink, true);
+		if (impl->direction == PW_DIRECTION_OUTPUT) {
+			pw_loop_update_io(impl->data_loop, impl->socket, impl->paused ? SPA_IO_IN : 0);
+			set_timeout(impl, 0);
+		}
 		break;
 	case PW_STREAM_STATE_STREAMING:
-		pw_log_info("Stream now STREAMING - audio should work");
+		if (impl->direction == PW_DIRECTION_OUTPUT) {
+			pw_loop_update_io(impl->data_loop, impl->socket, SPA_IO_IN);
+			impl->driving = pw_stream_is_driving(impl->stream);
+			if (impl->driving) {
+				impl->next_time = get_time_ns(impl);
+				set_timeout(impl, impl->next_time);
+			}
+		}
 		break;
 	default:
 		break;
 	}
-    pw_log_debug("stream_state_changed:%s", pw_stream_state_as_string (state));
 }
 
-static void stream_state_changed_source(void *d, enum pw_stream_state old,
-		enum pw_stream_state state, const char *error)
+static int do_pause(struct spa_loop *loop, bool async, uint32_t seq, const void *data,
+		size_t size, void *user_data)
 {
-	struct impl *impl = d;
-	switch (state) {
-	case PW_STREAM_STATE_ERROR:
-	case PW_STREAM_STATE_UNCONNECTED:
-		//pw_impl_module_schedule_destroy(impl->module);
-		unload_module(impl);
-		break;
-	case PW_STREAM_STATE_PAUSED:
-		close_send_source(impl);
-		break;
-	case PW_STREAM_STATE_STREAMING:
-		break;
-	default:
-		break;
-	}
-    pw_log_debug("stream_state_changed:%s", pw_stream_state_as_string (state));
+	struct impl *impl = user_data;
+	const bool *paused = data;
+	pw_log_info("set paused: %d", *paused);
+	impl->paused = *paused;
+	pw_stream_set_active(impl->stream, !*paused);
+	return 0;
 }
 
-static int conect_xrdp_socket(struct impl *impl, char *filename) {
-    struct sockaddr_un s = { 0 };
-    struct timespec tm;
-
-    if (impl->failed_connect_time != 0) {
-        clock_gettime(CLOCK_MONOTONIC, &tm);
-        if ((tm.tv_sec * 1000000000LL + tm.tv_nsec) - impl->failed_connect_time < 1000000000LL) {
-            return -1;
-        }
-    }
-
-    /* Check if socket exists first */
-    if (access(filename, F_OK) != 0) {
-        pw_log_warn("Socket %s does not exist, cannot connect", filename);
-        clock_gettime(CLOCK_MONOTONIC, &tm);
-        impl->failed_connect_time = tm.tv_sec * 1000000000LL + tm.tv_nsec;
-        return -1;
-    }
-
-    /* connect to xrdp unix domain socket */
-    int fd = socket(PF_LOCAL, SOCK_STREAM, 0);
-    
-    /* Make socket non-blocking to prevent hanging */
-    int flags = fcntl(fd, F_GETFL, 0);
-    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-    
-    s.sun_family = AF_UNIX;
-    strncpy(s.sun_path, filename, sizeof(s.sun_path)-1);
-    pw_log_info("trying to connect to %s", s.sun_path);
-
-    if (connect(fd, (struct sockaddr *)&s, sizeof(struct sockaddr_un)) != 0) {
-        if (errno == EINPROGRESS) {
-            /* Connection in progress - for unix sockets this usually means success */
-            fcntl(fd, F_SETFL, flags); /* Set back to blocking for data operations */
-        } else {
-            pw_log_warn("Connect failed: %s", strerror(errno));
-            close(fd);
-            clock_gettime(CLOCK_MONOTONIC, &tm);
-            impl->failed_connect_time = tm.tv_sec * 1000000000LL + tm.tv_nsec;
-            fd = -1;
-        }
-    } else {
-        /* Connected immediately */
-        fcntl(fd, F_SETFL, flags); /* Set back to blocking for data operations */
-        impl->failed_connect_time = 0;
-        struct stat st;
-        if (fstat(fd, &st) == 0) {
-            pw_log_info("Connected ok fd %d, socket inode %lu", fd, st.st_ino);
-        } else {
-            pw_log_info("Connected ok fd %d, could not get inode", fd);
-        }
-    }
-    return fd;
-}
-
-static void set_socket_path(struct impl *impl) {
-	const char *socket_path;
-    char default_socket_path[128];
-    char default_socket_name[128];
-    char default_socket_dir[128];
-
-    const char *socket_dir;
-    const char *socket_name;
-
-    socket_dir = getenv("XRDP_SOCKET_PATH");
-    if (socket_dir == NULL || socket_dir[0] == '\0') {
-		snprintf(default_socket_dir, sizeof(default_socket_dir)-1, "/var/run/xrdp/%d", getuid());
-		socket_dir = default_socket_dir;
-	}
-    impl->display_num = get_display_num_from_display(getenv("DISPLAY"));
-
-    socket_name = getenv("XRDP_PULSE_SINK_SOCKET");
-    if (socket_name == NULL || socket_name[0] == '\0') {
-		snprintf(default_socket_name, sizeof(default_socket_name)-1,
-			"xrdp_chansrv_audio_out_socket_%d", impl->display_num);
-       	socket_name = default_socket_name;
-   	}
-	snprintf(default_socket_path, sizeof(default_socket_path)-1, "%s/%s", socket_dir, socket_name);
-	socket_path = default_socket_path;
-
-    pw_log_info("set_sink_socket. socket path:%s", socket_path);
-
-	impl->filename_sink = strdup(socket_path);
-
-    socket_name = getenv("XRDP_PULSE_SOURCE_SOCKET");
-    if (socket_name == NULL || socket_name[0] == '\0') {
-		snprintf(default_socket_name, sizeof(default_socket_name)-1,
-			"xrdp_chansrv_audio_out_socket_%d", impl->display_num);
-       	socket_name = default_socket_name;
-   	}
-	snprintf(default_socket_path, sizeof(default_socket_path)-1, "%s/%s", socket_dir, socket_name);
-	socket_path = default_socket_path;
-
-    pw_log_info("set_source_socket. socket path:%s", socket_path);
-
-	impl->filename_source = strdup(socket_path);
+static void pause_stream(struct impl *impl, bool paused)
+{
+	if (!impl->may_pause)
+		return;
+	if (impl->direction == PW_DIRECTION_INPUT)
+		pw_loop_update_io(impl->data_loop, impl->socket, paused ? SPA_IO_OUT : 0);
+	pw_loop_invoke(impl->main_loop, do_pause, 1, &paused, sizeof(bool), false, impl);
 }
 
 static void playback_stream_process(void *data)
 {
 	struct impl *impl = data;
 	struct pw_buffer *buf;
-	ssize_t written_all = 0;
-	uint32_t size_all = 0;
+	uint32_t i, size, offs;
+	ssize_t written;
 
-	pw_log_info("=== PLAYBACK STREAM PROCESS CALLED ===");
-
-	if ((buf = pw_stream_dequeue_buffer(impl->stream_sink)) == NULL) {
+	if ((buf = pw_stream_dequeue_buffer(impl->stream)) == NULL) {
 		pw_log_debug("out of buffers: %m");
 		return;
 	}
 
-	pw_log_info("Got buffer, checking socket connection fd_sink=%d", impl->fd_sink);
-	pw_log_info("Buffer n_datas=%d", buf->buffer->n_datas);
+	for (i = 0; i < buf->buffer->n_datas; i++) {
+		struct spa_data *d;
+		d = &buf->buffer->datas[i];
 
-    if (impl->fd_sink == -1) {
-		pw_log_info("Socket not connected, attempting connection to %s", impl->filename_sink);
-        if ((impl->fd_sink = conect_xrdp_socket(impl, impl->filename_sink)) == -1) {
-			pw_log_warn("Socket connection failed, dropping audio data");
-            goto done;
+		offs = SPA_MIN(d->chunk->offset, d->maxsize);
+		size = SPA_MIN(d->chunk->size, d->maxsize - offs);
+
+		while (size > 0) {
+			written = write(impl->fd, SPA_MEMBER(d->data, offs, void), size);
+			if (written < 0) {
+				if (errno == EINTR) {
+					/* retry if interrupted */
+					continue;
+				} else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+					/* Don't continue writing */
+					pw_log_debug("pipe (%s) overrun: %m", impl->filename);
+					pause_stream(impl, true);
+					break;
+				} else {
+					pw_log_warn("Failed to write to pipe (%s): %m",
+							impl->filename);
+				}
+			}
+			offs += written;
+			size -= written;
 		}
-	} else {
-        /* Only check for socket changes occasionally to avoid triggering XRDP socket recreation */
-        static int check_counter = 0;
-        if (++check_counter > 100) { /* Check every ~100 audio buffers */
-            check_counter = 0;
-            struct stat path_stat, fd_stat;
-            if (stat(impl->filename_sink, &path_stat) != 0) {
-                pw_log_warn("Socket path %s no longer exists, reconnecting", impl->filename_sink);
-                close(impl->fd_sink);
-                impl->fd_sink = -1;
-                if ((impl->fd_sink = conect_xrdp_socket(impl, impl->filename_sink)) == -1) {
-                    pw_log_warn("Socket reconnection failed, dropping audio data");
-                    goto done;
-                }
-            } else if (fstat(impl->fd_sink, &fd_stat) != 0 || path_stat.st_ino != fd_stat.st_ino) {
-                pw_log_warn("XRDP created new socket (path inode %lu != our inode %lu), reconnecting", 
-                           path_stat.st_ino, fd_stat.st_ino);
-                close(impl->fd_sink);
-                impl->fd_sink = -1;
-                if ((impl->fd_sink = conect_xrdp_socket(impl, impl->filename_sink)) == -1) {
-                    pw_log_warn("Socket reconnection failed, dropping audio data");
-                    goto done;
-                }
-            }
-        }
 	}
+	pw_stream_queue_buffer(impl->stream, buf);
+}
 
-	for (uint32_t i = 0; i < buf->buffer->n_datas; i++) {
-        uint32_t size, offs;
-        struct spa_data *d;
-        d = &buf->buffer->datas[i];
+static void update_rate(struct impl *impl, uint32_t filled)
+{
+	double error;
 
-        offs = SPA_MIN(d->chunk->offset, d->maxsize);
-        size = SPA_MIN(d->chunk->size, d->maxsize - offs);
-        
-        pw_log_info("Buffer %d: offset=%d size=%d maxsize=%d", i, offs, size, d->maxsize);
+	error = (double)impl->target_buffer - (double)(filled);
+	error = SPA_CLAMPD(error, -impl->max_error, impl->max_error);
 
-        size_all += size;
-    }
-    pw_log_info("Total audio data size: %d bytes", size_all);
-    
-    if (size_all == 0) {
-        pw_log_info("No audio data to send, skipping");
-        goto error;
-    }
-    
-    /* Send header first: id=0 (audio data), size=8+data_size in little-endian */
-    uint32_t header[2];
-    header[0] = htole32(0);  /* id = 0 (audio data) */
-    header[1] = htole32(8 + size_all);  /* size = header + data */
-    if (lsend(impl->fd_sink, (char*)header, 8) != 8) {
-        pw_log_warn("data_send: send header failed");
-        close(impl->fd_sink);
-        impl->fd_sink = -1;
-        goto error;
-    } else {
-        pw_log_info("data_send: sent header ok bytes %d", size_all);
-    }
+	impl->corr = spa_dll_update(&impl->dll, error);
+	pw_log_debug("error:%f corr:%f current:%u target:%u",
+			error, impl->corr, filled, impl->target_buffer);
 
-	for (uint32_t i = 0; i < buf->buffer->n_datas; i++) {
-        uint32_t size, offs;
-        ssize_t written;
-        struct spa_data *d;
-        d = &buf->buffer->datas[i];
-
-        offs = SPA_MIN(d->chunk->offset, d->maxsize);
-        size = SPA_MIN(d->chunk->size, d->maxsize - offs);
-
-        pw_log_info("Sending audio data chunk %d: size=%d", i, size);
-        written = lsend(impl->fd_sink, SPA_MEMBER(d->data, offs, void), size);
-        written_all += written;
-        pw_log_info("Sent audio data chunk %d: written=%ld", i, written);
-        if (written != size) {
-            pw_log_warn("Failed to write to xrdp sink: written=%ld expected=%d", written, size);
-            close(impl->fd_sink);
-            impl->fd_sink = -1;
-            goto error;
-        }
-	}
-
-done:
-error:
-	pw_stream_queue_buffer(impl->stream_sink, buf);
-
-    if (written_all != size_all) {
-        //pw_log_warn("data_send: send failed sent %ld bytes %d", written_all, size_all);
-    } else {
-        //pw_log_warn("data_send: send OK n_datas:%d sent %ld bytes %d", buf->buffer->n_datas, written_all, size_all);
-    }
+	if (!impl->driving)
+		pw_stream_set_rate(impl->stream, 1.0 / impl->corr);
 }
 
 static void capture_stream_process(void *data)
 {
 	struct impl *impl = data;
 	struct pw_buffer *buf;
-	struct spa_data *d;
-	uint32_t req;
-	ssize_t nread = 0;
+	struct spa_data *bd;
+	uint32_t req, index, size;
+	int32_t avail;
 
-	if ((buf = pw_stream_dequeue_buffer(impl->stream_source)) == NULL) {
-		pw_log_debug("out of buffers: %m");
+	if ((buf = pw_stream_dequeue_buffer(impl->stream)) == NULL) {
+		pw_log_warn("out of buffers: %m");
 		return;
 	}
 
-	d = &buf->buffer->datas[0];
+	bd = &buf->buffer->datas[0];
 
 	if ((req = buf->requested * impl->frame_size) == 0)
 		req = 4096 * impl->frame_size;
 
-	req = SPA_MIN(req, d->maxsize);
+	size = SPA_MIN(req, bd->maxsize);
+	size = SPA_ROUND_DOWN(size, impl->frame_size);
 
-	d->chunk->offset = 0;
-	d->chunk->stride = impl->frame_size;
-	d->chunk->size = SPA_MIN(req, impl->leftover_count);
-	memcpy(d->data, impl->leftover, d->chunk->size);
-	req -= d->chunk->size;
+	avail = spa_ringbuffer_get_read_index(&impl->ring, &index);
 
-	uint32_t bytes = 0;
-    unsigned char ubuf[10];
+	pw_log_debug("avail %d %u %u", avail, index, size);
 
-	if (impl->fd_source == -1) {
-	    if ((impl->fd_source = conect_xrdp_socket(impl, impl->filename_source)) == -1)
-	        goto nodata;
-	}
-
-	if (!impl->want_src_data) {
-		char start_rec[] = { 0, 0, 0, 0, 11, 0, 0, 0, PA_CMD_START_REC, 0, 0 };
-
-		if (lsend(impl->fd_source, start_rec, 11) != 11) {
-			close(impl->fd_source);
-			impl->fd_source = -1;
-			goto nodata;
+	if (avail < (int32_t)size) {
+		memset(bd->data, 0, size);
+		if (avail >= 0) {
+			if (!impl->underrun) {
+				pw_log_warn("underrun %d < %u", avail, size);
+				impl->underrun = true;
+			}
+			pause_stream(impl, true);
 		}
-		impl->want_src_data = 1;
-		pw_log_debug("###### started recording");
+		impl->have_sync = false;
 	}
-
-	/* ask for more data */
-	char send_data[] = { 0, 0, 0, 0, 11, 0, 0, 0, PA_CMD_SEND_DATA, (unsigned char) req, (unsigned char) ((req >> 8) & 0xff) };
-
-	if (lsend(impl->fd_source, send_data, 11) != 11) {
-		close(impl->fd_source);
-		impl->fd_source = -1;
-		impl->want_src_data = 0;
-		goto nodata;
+	if (avail > (int32_t)(impl->target_buffer * 3)) {
+		pw_log_warn("resync %d > %u", avail, (int32_t)(impl->target_buffer * 3));
+		impl->have_sync = false;
 	}
-
-	/* read length of data available */
-	if (lrecv(impl->fd_source, (char *) ubuf, 2) != 2) {
-		close(impl->fd_source);
-		impl->fd_source = -1;
-		impl->want_src_data = 0;
-		goto nodata;
+	if (avail > (int32_t)RINGBUFFER_SIZE) {
+		index += avail - impl->target_buffer;
+		avail = impl->target_buffer;
+		pw_log_warn("overrun %d > %u", avail, RINGBUFFER_SIZE);
 	}
-	bytes = ((ubuf[1] << 8) & 0xff00) | (ubuf[0] & 0xff);
+	if (avail > 0) {
+		avail = SPA_ROUND_DOWN(avail, impl->frame_size);
+		update_rate(impl, avail);
 
-	if (bytes == 0)
-		goto nodata;
+		avail = SPA_MIN(size, (uint32_t)avail);
+		spa_ringbuffer_read_data(&impl->ring,
+				impl->buffer, RINGBUFFER_SIZE,
+				index & RINGBUFFER_MASK,
+				bd->data, avail);
 
-	/* get data */
-	nread = lrecv(impl->fd_source, SPA_PTROFF(d->data, d->chunk->size, void), /*req*/bytes);
-	if (nread < 0) {
-		close(impl->fd_source);
-		impl->fd_source = -1;
-		impl->want_src_data = 0;
-		pw_log_warn("failed to read from pipe (%s): %s",
-					impl->filename_source, strerror(errno));
-	} else {
-		d->chunk->size += nread;
+		index += avail;
+		spa_ringbuffer_read_update(&impl->ring, index);
+		impl->underrun = false;
 	}
-nodata:
-    //pw_log_debug("nread:%ld. req:%d. %s", nread, req, req == bytes ? "":"req != bytes");
+	bd->chunk->offset = 0;
+	bd->chunk->size = size;
+	bd->chunk->stride = impl->frame_size;
 
-	impl->leftover_count = d->chunk->size % impl->frame_size;
-	d->chunk->size -= impl->leftover_count;
-	memcpy(impl->leftover, SPA_PTROFF(d->data, d->chunk->size, void), impl->leftover_count);
+	pw_stream_queue_buffer(impl->stream, buf);
+}
 
-	pw_stream_queue_buffer(impl->stream_source, buf);
+static void stream_io_changed(void *data, uint32_t id, void *area, uint32_t size)
+{
+	struct impl *impl = data;
+	switch (id) {
+	case SPA_IO_Position:
+		impl->position = area;
+		break;
+	}
 }
 
 static const struct pw_stream_events playback_stream_events = {
 	PW_VERSION_STREAM_EVENTS,
-	.destroy = stream_destroy_sink,
-	.state_changed = stream_state_changed_sink,
+	.destroy = stream_destroy,
+	.state_changed = stream_state_changed,
 	.process = playback_stream_process
 };
 
 static const struct pw_stream_events capture_stream_events = {
 	PW_VERSION_STREAM_EVENTS,
-	.destroy = stream_destroy_source,
-	.state_changed = stream_state_changed_source,
-	.process = capture_stream_process
+	.destroy = stream_destroy,
+	.io_changed = stream_io_changed,
+	.state_changed = stream_state_changed,
+	.process = capture_stream_process,
 };
 
 static int create_stream(struct impl *impl)
@@ -715,64 +595,206 @@ static int create_stream(struct impl *impl)
 	uint8_t buffer[1024];
 	struct spa_pod_builder b;
 
-	// sink
-	if (impl->mode & MODE_XRDP_SINK) {
-		impl->stream_sink = pw_stream_new(impl->core, "xrdp-sink", impl->stream_props_sink);
-		impl->stream_props_sink = NULL;
+	impl->stream = pw_stream_new(impl->core, "pipe", impl->stream_props);
+	impl->stream_props = NULL;
 
-		if (impl->stream_sink == NULL)
-			return -errno;
+	if (impl->stream == NULL)
+		return -errno;
 
-		pw_stream_add_listener(impl->stream_sink,
-				&impl->stream_listener_sink,
-				&playback_stream_events, impl);
-	}
-
-	//source
-	if (impl->mode & MODE_XRDP_SOURCE) {
-		impl->stream_source = pw_stream_new(impl->core, "xrdp-source", impl->stream_props_source);
-		impl->stream_props_source = NULL;
-
-		if (impl->stream_source == NULL)
-			return -errno;
-
-		pw_stream_add_listener(impl->stream_source,
-				&impl->stream_listener_source,
+	if (impl->direction == PW_DIRECTION_OUTPUT) {
+		pw_stream_add_listener(impl->stream,
+				&impl->stream_listener,
 				&capture_stream_events, impl);
+	} else {
+		pw_stream_add_listener(impl->stream,
+				&impl->stream_listener,
+				&playback_stream_events, impl);
 	}
 
 	n_params = 0;
 	spa_pod_builder_init(&b, buffer, sizeof(buffer));
 	params[n_params++] = spa_format_audio_raw_build(&b,
-		SPA_PARAM_EnumFormat, &impl->info);
+			SPA_PARAM_EnumFormat, &impl->info);
 
-	if (impl->mode & MODE_XRDP_SINK) {
-		if ((res = pw_stream_connect(impl->stream_sink,
-				PW_DIRECTION_INPUT,
-				PW_ID_ANY,
-				PW_STREAM_FLAG_AUTOCONNECT |
-				PW_STREAM_FLAG_MAP_BUFFERS |
-				PW_STREAM_FLAG_RT_PROCESS |
-				PW_STREAM_FLAG_INACTIVE,
-				params, n_params)) < 0)
-			return res;
-		
-		// Force the stream to be active immediately after connection
-		pw_stream_set_active(impl->stream_sink, true);
-	}
+	impl->paused = false;
 
-	if (impl->mode & MODE_XRDP_SOURCE) {
-		if ((res = pw_stream_connect(impl->stream_source,
-				PW_DIRECTION_OUTPUT,
-				PW_ID_ANY,
-				PW_STREAM_FLAG_AUTOCONNECT |
-				PW_STREAM_FLAG_MAP_BUFFERS |
-				PW_STREAM_FLAG_RT_PROCESS,
-				params, n_params)) < 0)
-			return res;
-	}
+	if ((res = pw_stream_connect(impl->stream,
+			impl->direction,
+			PW_ID_ANY,
+			PW_STREAM_FLAG_AUTOCONNECT |
+			PW_STREAM_FLAG_MAP_BUFFERS |
+			PW_STREAM_FLAG_RT_PROCESS,
+			params, n_params)) < 0)
+		return res;
 
 	return 0;
+}
+
+static inline void
+set_iovec(struct spa_ringbuffer *rbuf, void *buffer, uint32_t size,
+		uint32_t offset, struct iovec *iov, uint32_t len)
+{
+	iov[0].iov_len = SPA_MIN(len, size - offset);
+	iov[0].iov_base = SPA_PTROFF(buffer, offset, void);
+	iov[1].iov_len = len - iov[0].iov_len;
+	iov[1].iov_base = buffer;
+}
+
+static int handle_pipe_read(struct impl *impl)
+{
+	ssize_t nread;
+	int32_t filled;
+	uint32_t index;
+	struct iovec iov[2];
+
+	filled = spa_ringbuffer_get_write_index(&impl->ring, &index);
+	if (!impl->have_sync) {
+		memset(impl->buffer, 0, RINGBUFFER_SIZE);
+	}
+
+	if (filled < 0) {
+		pw_log_warn("%p: underrun write:%u filled:%d",
+				impl, index, filled);
+	}
+
+	set_iovec(&impl->ring,
+			impl->buffer, RINGBUFFER_SIZE,
+			index & RINGBUFFER_MASK,
+			iov, RINGBUFFER_SIZE);
+
+	nread = read(impl->fd, iov[0].iov_base, iov[0].iov_len);
+	if (nread > 0) {
+		index += nread;
+		filled += nread;
+		if (nread == (ssize_t)iov[0].iov_len) {
+			nread = read(impl->fd, iov[1].iov_base, iov[1].iov_len);
+			if (nread > 0) {
+				index += nread;
+				filled += nread;
+			}
+		}
+	}
+	if (!impl->have_sync) {
+		impl->ring.readindex = index - impl->target_buffer;
+
+		spa_dll_init(&impl->dll);
+		spa_dll_set_bw(&impl->dll, SPA_DLL_BW_MIN, 256.f, impl->info.rate);
+		impl->corr = 1.0f;
+
+		pw_log_info("resync");
+		impl->have_sync = true;
+	}
+	spa_ringbuffer_write_update(&impl->ring, index);
+
+	if (nread < 0) {
+		const bool important = !(errno == EINTR
+					 || errno == EAGAIN
+					 || errno == EWOULDBLOCK);
+
+		if (important)
+			pw_log_warn("failed to read from pipe (%s): %m",
+				    impl->filename);
+		else
+			pw_log_debug("pipe (%s) underrun: %m", impl->filename);
+	}
+	pw_log_debug("filled %d %u %d", filled, index, impl->target_buffer);
+
+	return 0;
+}
+
+
+static void on_pipe_io(void *data, int fd, uint32_t mask)
+{
+	struct impl *impl = data;
+
+	if (mask & (SPA_IO_ERR | SPA_IO_HUP)) {
+		pw_log_warn("error:%08x", mask);
+		pw_loop_update_io(impl->data_loop, impl->socket, 0);
+		return;
+	}
+	if (impl->paused)
+		pause_stream(impl, false);
+	if (mask & SPA_IO_IN)
+		handle_pipe_read(impl);
+}
+
+static int create_fifo(struct impl *impl)
+{
+	struct stat st;
+	const char *filename;
+	bool do_unlink_fifo = false;
+	int fd = -1, res;
+
+	if ((filename = pw_properties_get(impl->props, "pipe.filename")) == NULL)
+		filename = impl->direction == PW_DIRECTION_INPUT ?
+			DEFAULT_CAPTURE_FILENAME :
+			DEFAULT_PLAYBACK_FILENAME;
+
+	if (mkfifo(filename, 0666) < 0) {
+		if (errno != EEXIST) {
+			res = -errno;
+			pw_log_error("mkfifo('%s'): %s", filename, spa_strerror(res));
+			goto error;
+		}
+	} else {
+		/*
+		 * Our umask is 077, so the pipe won't be created with the
+		 * requested permissions. Let's fix the permissions with chmod().
+		 */
+		if (chmod(filename, 0666) < 0)
+			pw_log_warn("chmod('%s'): %s", filename, spa_strerror(-errno));
+
+		do_unlink_fifo = true;
+	}
+	if ((fd = open(filename, O_RDWR | O_CLOEXEC | O_NONBLOCK, 0)) < 0) {
+		res = -errno;
+		pw_log_error("open('%s'): %s", filename, spa_strerror(res));
+		goto error;
+	}
+
+	if (fstat(fd, &st) < 0) {
+		res = -errno;
+		pw_log_error("fstat('%s'): %s", filename, spa_strerror(res));
+		goto error;
+	}
+
+	if (!S_ISFIFO(st.st_mode)) {
+		res = -EINVAL;
+		pw_log_error("'%s' is not a FIFO.", filename);
+		goto error;
+	}
+	impl->socket = pw_loop_add_io(impl->data_loop, fd,
+			0, false, on_pipe_io, impl);
+	if (impl->socket == NULL) {
+		res = -errno;
+		pw_log_error("can't create socket");
+		goto error;
+	}
+	impl->timer = pw_loop_add_timer(impl->data_loop, on_timeout, impl);
+	if (impl->timer == NULL) {
+		res = -errno;
+		pw_log_error("can't create timer");
+		goto error;
+	}
+
+	pw_log_info("%s fifo '%s' with format:%s channels:%d rate:%d",
+			impl->direction == PW_DIRECTION_OUTPUT ? "reading from" : "writing to",
+			filename,
+			spa_debug_type_find_name(spa_type_audio_format, impl->info.format),
+			impl->info.channels, impl->info.rate);
+
+	impl->filename = strdup(filename);
+	impl->unlink_fifo = do_unlink_fifo;
+	impl->fd = fd;
+
+	return 0;
+
+error:
+	if (do_unlink_fifo)
+		unlink(filename);
+	if (fd >= 0)
+		close(fd);
+	return res;
 }
 
 static void core_error(void *data, uint32_t id, int seq, int res, const char *message)
@@ -783,8 +805,7 @@ static void core_error(void *data, uint32_t id, int seq, int res, const char *me
 			id, seq, res, spa_strerror(res), message);
 
 	if (id == PW_ID_CORE && res == -EPIPE)
-		//pw_impl_module_schedule_destroy(impl->module);
-		unload_module(impl);
+		pw_impl_module_schedule_destroy(impl->module);
 }
 
 static const struct pw_core_events core_events = {
@@ -797,8 +818,7 @@ static void core_destroy(void *d)
 	struct impl *impl = d;
 	spa_hook_remove(&impl->core_listener);
 	impl->core = NULL;
-	//pw_impl_module_schedule_destroy(impl->module);
-	unload_module(impl);
+	pw_impl_module_schedule_destroy(impl->module);
 }
 
 static const struct pw_proxy_events core_proxy_events = {
@@ -807,44 +827,29 @@ static const struct pw_proxy_events core_proxy_events = {
 
 static void impl_destroy(struct impl *impl)
 {
-    close_send_sink(impl);
-    close_send_source(impl);
-
-	if (impl->registry) {
-		spa_hook_remove(&impl->registry_listener);
-		pw_proxy_destroy((struct pw_proxy*)impl->registry);
-		impl->registry = NULL;
-	}
-
-	if (impl->stream_sink)
-		pw_stream_destroy(impl->stream_sink);
+	if (impl->stream)
+		pw_stream_destroy(impl->stream);
 	if (impl->core && impl->do_disconnect)
 		pw_core_disconnect(impl->core);
 
-	if (impl->filename_sink) {
-		free(impl->filename_sink);
-		impl->filename_sink = NULL;
+	if (impl->filename) {
+		if (impl->unlink_fifo)
+			unlink(impl->filename);
+		free(impl->filename);
 	}
-	if (impl->fd_sink >= 0)
-		close(impl->fd_sink);
+	if (impl->socket)
+		pw_loop_destroy_source(impl->data_loop, impl->socket);
+	if (impl->timer)
+		pw_loop_destroy_source(impl->data_loop, impl->timer);
+	if (impl->fd >= 0)
+		close(impl->fd);
 
-	pw_properties_free(impl->stream_props_sink);
-	pw_properties_free(impl->props_sink);
+	pw_context_release_loop(impl->context, impl->data_loop);
 
-	if (impl->stream_source)
-		pw_stream_destroy(impl->stream_source);
+	pw_properties_free(impl->stream_props);
+	pw_properties_free(impl->props);
 
-	if (impl->filename_source) {
-		free(impl->filename_source);
-		impl->filename_source = NULL;
-	}
-	if (impl->fd_source >= 0)
-		close(impl->fd_source);
-
-	pw_properties_free(impl->stream_props_source);
-	pw_properties_free(impl->props_source);
-
-	free(impl->leftover);
+	free(impl->buffer);
 	free(impl);
 }
 
@@ -860,61 +865,18 @@ static const struct pw_impl_module_events module_events = {
 	.destroy = module_destroy,
 };
 
-static uint32_t channel_from_name(const char *name)
-{
-	int i;
-	for (i = 0; spa_type_audio_channel[i].name; i++) {
-		if (spa_streq(name, spa_debug_type_short_name(spa_type_audio_channel[i].name)))
-			return spa_type_audio_channel[i].type;
-	}
-	return SPA_AUDIO_CHANNEL_UNKNOWN;
-}
-
-static void parse_position(struct spa_audio_info_raw *info, const char *val, size_t len)
-{
-	struct spa_json it[2];
-	char v[256];
-
-	spa_json_init(&it[0], val, len);
-        if (spa_json_enter_array(&it[0], &it[1]) <= 0)
-                spa_json_init(&it[1], val, len);
-
-	info->channels = 0;
-	while (spa_json_get_string(&it[1], v, sizeof(v)) > 0 &&
-	    info->channels < SPA_AUDIO_MAX_CHANNELS) {
-		info->position[info->channels++] = channel_from_name(v);
-	}
-}
-
-static inline uint32_t format_from_name(const char *name, size_t len)
-{
-	int i;
-	for (i = 0; spa_type_audio_format[i].name; i++) {
-		if (strncmp(name, spa_debug_type_short_name(spa_type_audio_format[i].name), len) == 0)
-			return spa_type_audio_format[i].type;
-	}
-	return SPA_AUDIO_FORMAT_UNKNOWN;
-}
-
 static void parse_audio_info(const struct pw_properties *props, struct spa_audio_info_raw *info)
 {
-	const char *str;
-
-	spa_zero(*info);
-	if ((str = pw_properties_get(props, PW_KEY_AUDIO_FORMAT)) == NULL)
-		str = DEFAULT_FORMAT;
-	info->format = format_from_name(str, strlen(str));
-
-	info->rate = pw_properties_get_uint32(props, PW_KEY_AUDIO_RATE, info->rate);
-	if (info->rate == 0)
-		info->rate = DEFAULT_RATE;
-
-	info->channels = pw_properties_get_uint32(props, PW_KEY_AUDIO_CHANNELS, info->channels);
-	info->channels = SPA_MIN(info->channels, SPA_AUDIO_MAX_CHANNELS);
-	if ((str = pw_properties_get(props, SPA_KEY_AUDIO_POSITION)) != NULL)
-		parse_position(info, str, strlen(str));
-	if (info->channels == 0)
-		parse_position(info, DEFAULT_POSITION, strlen(DEFAULT_POSITION));
+	spa_audio_info_raw_init_dict_keys(info,
+			&SPA_DICT_ITEMS(
+				 SPA_DICT_ITEM(SPA_KEY_AUDIO_FORMAT, DEFAULT_FORMAT),
+				 SPA_DICT_ITEM(SPA_KEY_AUDIO_RATE, SPA_STRINGIFY(DEFAULT_RATE)),
+				 SPA_DICT_ITEM(SPA_KEY_AUDIO_POSITION, DEFAULT_POSITION)),
+			&props->dict,
+			SPA_KEY_AUDIO_FORMAT,
+			SPA_KEY_AUDIO_RATE,
+			SPA_KEY_AUDIO_CHANNELS,
+			SPA_KEY_AUDIO_POSITION, NULL);
 }
 
 static int calc_frame_size(const struct spa_audio_info_raw *info)
@@ -951,15 +913,14 @@ static int calc_frame_size(const struct spa_audio_info_raw *info)
 	}
 }
 
-static void copy_props(struct pw_properties *stream_props, struct pw_properties *props, const char *key)
+static void copy_props(struct impl *impl, struct pw_properties *props, const char *key)
 {
 	const char *str;
 	if ((str = pw_properties_get(props, key)) != NULL) {
-		if (pw_properties_get(stream_props, key) == NULL)
-			pw_properties_set(stream_props, key, str);
+		if (pw_properties_get(impl->stream_props, key) == NULL)
+			pw_properties_set(impl->stream_props, key, str);
 	}
 }
-
 
 SPA_EXPORT
 int pipewire__module_init(struct pw_impl_module *module, const char *args)
@@ -967,23 +928,16 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	struct pw_context *context = pw_impl_module_get_context(module);
 	struct pw_properties *props = NULL;
 	struct impl *impl;
-	const char *str;
+	const char *str, *media_class = NULL;
 	int res;
 
-	/* PW_LOG_TOPIC_INIT(mod_topic); */
+	PW_LOG_TOPIC_INIT(mod_topic);
 
 	impl = calloc(1, sizeof(struct impl));
 	if (impl == NULL)
 		return -errno;
 
-	impl->fd_sink = -1;
-	impl->fd_source = -1;
-	impl->filename_sink = NULL;
-	impl->filename_source = NULL;
-
-	impl->module = module;
-	impl->context = context;
-	impl->work = pw_context_get_work_queue(context);
+	impl->fd = -1;
 
 	pw_log_debug("module %p: new %s", impl, args);
 
@@ -996,111 +950,73 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 		pw_log_error( "can't create properties: %m");
 		goto error;
 	}
-	impl->props_sink = props;
+	impl->props = props;
 
-	impl->stream_props_sink = pw_properties_new(NULL, NULL);
-	if (impl->stream_props_sink == NULL) {
+	impl->stream_props = pw_properties_new(NULL, NULL);
+	if (impl->stream_props == NULL) {
 		res = -errno;
 		pw_log_error( "can't create properties: %m");
 		goto error;
 	}
 
-	// sink
+	impl->module = module;
+	impl->context = context;
+	impl->main_loop = pw_context_get_main_loop(context);
+	impl->data_loop = pw_context_acquire_loop(context, &props->dict);
+
+	if ((str = pw_properties_get(props, "tunnel.mode")) == NULL)
+		str = "playback";
+
+	if (spa_streq(str, "capture")) {
+		impl->mode = MODE_CAPTURE;
+		impl->direction = PW_DIRECTION_INPUT;
+		impl->may_pause = true;
+	} else if (spa_streq(str, "playback")) {
+		impl->mode = MODE_PLAYBACK;
+		impl->direction = PW_DIRECTION_OUTPUT;
+		impl->may_pause = true;
+	}else if (spa_streq(str, "sink")) {
+		impl->mode = MODE_SINK;
+		impl->direction = PW_DIRECTION_INPUT;
+		impl->may_pause = false;
+		media_class = "Audio/Sink";
+	} else if (spa_streq(str, "source")) {
+		impl->mode = MODE_SOURCE;
+		impl->direction = PW_DIRECTION_OUTPUT;
+		impl->may_pause = false;
+		media_class = "Audio/Source";
+	} else {
+		pw_log_error("invalid tunnel.mode '%s'", str);
+		res = -EINVAL;
+		goto error;
+	}
+	if ((str = pw_properties_get(props, "tunnel.may-pause")) != NULL)
+		impl->may_pause = spa_atob(str);
+
+	pw_properties_set(props, PW_KEY_NODE_LOOP_NAME, impl->data_loop->name);
 	if (pw_properties_get(props, PW_KEY_NODE_VIRTUAL) == NULL)
 		pw_properties_set(props, PW_KEY_NODE_VIRTUAL, "true");
-	if (pw_properties_get(props, PW_KEY_NODE_NETWORK) == NULL)
-		pw_properties_set(props, PW_KEY_NODE_NETWORK, "true");
 	if (pw_properties_get(props, PW_KEY_MEDIA_CLASS) == NULL)
-		pw_properties_set(props, PW_KEY_MEDIA_CLASS, "Audio/Sink");
+		pw_properties_set(props, PW_KEY_MEDIA_CLASS, media_class);
 
-	if ((str = pw_properties_get(props, "sink.stream.props")) != NULL) {
-		impl->mode |= MODE_XRDP_SINK;
-		pw_properties_update_string(impl->stream_props_sink, str, strlen(str));
-	}
+	if ((str = pw_properties_get(props, "stream.props")) != NULL)
+		pw_properties_update_string(impl->stream_props, str, strlen(str));
 
-	copy_props(impl->stream_props_sink, props, PW_KEY_AUDIO_FORMAT);
-	copy_props(impl->stream_props_sink, props, PW_KEY_AUDIO_RATE);
-	copy_props(impl->stream_props_sink, props, PW_KEY_AUDIO_CHANNELS);
-	copy_props(impl->stream_props_sink, props, SPA_KEY_AUDIO_POSITION);
-	copy_props(impl->stream_props_sink, props, PW_KEY_NODE_NAME);
-	copy_props(impl->stream_props_sink, props, PW_KEY_NODE_DESCRIPTION);
-	copy_props(impl->stream_props_sink, props, PW_KEY_NODE_GROUP);
-//	copy_props(impl->stream_props_sink, props, PW_KEY_NODE_LATENCY);
-	copy_props(impl->stream_props_sink, props, PW_KEY_NODE_VIRTUAL);
-	copy_props(impl->stream_props_sink, props, PW_KEY_NODE_NETWORK);
-	copy_props(impl->stream_props_sink, props, PW_KEY_MEDIA_CLASS);
+	copy_props(impl, props, PW_KEY_NODE_LOOP_NAME);
+	copy_props(impl, props, PW_KEY_AUDIO_FORMAT);
+	copy_props(impl, props, PW_KEY_AUDIO_RATE);
+	copy_props(impl, props, PW_KEY_AUDIO_CHANNELS);
+	copy_props(impl, props, SPA_KEY_AUDIO_POSITION);
+	copy_props(impl, props, PW_KEY_NODE_NAME);
+	copy_props(impl, props, PW_KEY_NODE_DESCRIPTION);
+	copy_props(impl, props, PW_KEY_NODE_GROUP);
+	copy_props(impl, props, PW_KEY_NODE_LATENCY);
+	copy_props(impl, props, PW_KEY_NODE_VIRTUAL);
+	copy_props(impl, props, PW_KEY_MEDIA_CLASS);
+	copy_props(impl, props, PW_KEY_TARGET_OBJECT);
+	copy_props(impl, props, "pipe.filename");
 
-	// Set proper port names for sink (playback) - must be set on stream properties
-	pw_properties_set(impl->stream_props_sink, "port.name.prefix", "playback");
-	
-	// Force the node to always process and never suspend
-	pw_properties_set(impl->stream_props_sink, PW_KEY_NODE_ALWAYS_PROCESS, "true");
-	pw_properties_set(impl->stream_props_sink, PW_KEY_NODE_SUSPEND_ON_IDLE, "false");
-	pw_properties_set(impl->stream_props_sink, PW_KEY_NODE_PAUSE_ON_IDLE, "false");
-	
-	// Make this the default sink and act as its own driver
-	pw_properties_set(impl->stream_props_sink, "node.nick", "XRDP");
-	pw_properties_set(impl->stream_props_sink, "priority.driver", "1000");
-	pw_properties_set(impl->stream_props_sink, "priority.session", "1000");
-	pw_properties_set(impl->stream_props_sink, "node.driver", "true");
-
-	parse_audio_info(impl->stream_props_sink, &impl->info);
-
-	if (impl->info.rate != 0 &&
-	    pw_properties_get(props, PW_KEY_NODE_RATE) == NULL)
-		pw_properties_setf(props, PW_KEY_NODE_RATE,
-				"1/%u", impl->info.rate);
-
-	copy_props(impl->stream_props_sink, props, PW_KEY_NODE_RATE);
-
-	if ((str = pw_properties_get(props, "sink.node.latency")) != NULL)
-		pw_properties_setf(props, PW_KEY_NODE_LATENCY,	"%s/%u", str, impl->info.rate);
-	copy_props(impl->stream_props_sink, props, PW_KEY_NODE_LATENCY);
-
-	// source
-	props = pw_properties_new_string(args);
-	if (props == NULL) {
-		res = -errno;
-		pw_log_error( "can't create properties: %m");
-		goto error;
-	}
-	impl->props_source = props;
-
-	impl->stream_props_source = pw_properties_new(NULL, NULL);
-	if (impl->stream_props_source == NULL) {
-		res = -errno;
-		pw_log_error( "can't create properties: %m");
-		goto error;
-	}
-
-	if (pw_properties_get(props, PW_KEY_NODE_VIRTUAL) == NULL)
-		pw_properties_set(props, PW_KEY_NODE_VIRTUAL, "true");
-	if (pw_properties_get(props, PW_KEY_NODE_NETWORK) == NULL)
-		pw_properties_set(props, PW_KEY_NODE_NETWORK, "true");
-	if (pw_properties_get(props, PW_KEY_MEDIA_CLASS) == NULL)
-		pw_properties_set(props, PW_KEY_MEDIA_CLASS, "Audio/Source");
-
-	if ((str = pw_properties_get(props, "source.stream.props")) != NULL) {
-		impl->mode |= MODE_XRDP_SOURCE;
-		pw_properties_update_string(impl->stream_props_source, str, strlen(str));
-	}
-
-	copy_props(impl->stream_props_source, props, PW_KEY_AUDIO_FORMAT);
-	copy_props(impl->stream_props_source, props, PW_KEY_AUDIO_RATE);
-	copy_props(impl->stream_props_source, props, PW_KEY_AUDIO_CHANNELS);
-	copy_props(impl->stream_props_source, props, SPA_KEY_AUDIO_POSITION);
-	copy_props(impl->stream_props_source, props, PW_KEY_NODE_NAME);
-	copy_props(impl->stream_props_source, props, PW_KEY_NODE_DESCRIPTION);
-	copy_props(impl->stream_props_source, props, PW_KEY_NODE_GROUP);
-	copy_props(impl->stream_props_source, props, PW_KEY_NODE_LATENCY);
-	copy_props(impl->stream_props_source, props, PW_KEY_NODE_VIRTUAL);
-	copy_props(impl->stream_props_source, props, PW_KEY_NODE_NETWORK);
-	copy_props(impl->stream_props_source, props, PW_KEY_MEDIA_CLASS);
-
-	// Set proper port names for source (capture)
-	pw_properties_set(impl->stream_props_source, "port.name.prefix", "capture");
-
-	parse_audio_info(impl->stream_props_source, &impl->info);
+	parse_audio_info(impl->stream_props, &impl->info);
 
 	impl->frame_size = calc_frame_size(&impl->info);
 	if (impl->frame_size == 0) {
@@ -1114,19 +1030,20 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 		pw_properties_setf(props, PW_KEY_NODE_RATE,
 				"1/%u", impl->info.rate);
 
-	copy_props(impl->stream_props_source, props, PW_KEY_NODE_RATE);
+	copy_props(impl, props, PW_KEY_NODE_RATE);
 
-	impl->leftover = calloc(1, impl->frame_size);
-	if (impl->leftover == NULL) {
+	impl->buffer = calloc(1, RINGBUFFER_SIZE);
+	if (impl->buffer == NULL) {
 		res = -errno;
-		pw_log_error("can't alloc leftover buffer: %m");
+		pw_log_error("can't alloc ringbuffer: %m");
 		goto error;
 	}
-
-	if (!impl->mode) {
-		res = -EINVAL;
-		goto error;
-	}
+	spa_ringbuffer_init(&impl->ring);
+	impl->target_buffer = 8192 * impl->frame_size;
+	spa_dll_init(&impl->dll);
+	spa_dll_set_bw(&impl->dll, SPA_DLL_BW_MIN, 256.f, impl->info.rate);
+	impl->max_error = 256.0f * impl->frame_size;
+	impl->corr = 1.0f;
 
 	impl->core = pw_context_get_object(impl->context, PW_TYPE_INTERFACE_Core);
 	if (impl->core == NULL) {
@@ -1151,15 +1068,10 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 			&impl->core_listener,
 			&core_events, impl);
 
-	set_socket_path(impl);
+	if ((res = create_fifo(impl)) < 0)
+		goto error;
 
-	// Set up registry to monitor for link creation
-	impl->registry = pw_core_get_registry(impl->core, PW_VERSION_REGISTRY, 0);
-	if (impl->registry) {
-		pw_registry_add_listener(impl->registry, &impl->registry_listener, &registry_events, impl);
-	}
-
-  	if ((res = create_stream(impl)) < 0)
+	if ((res = create_stream(impl)) < 0)
 		goto error;
 
 	pw_impl_module_add_listener(module, &impl->module_listener, &module_events, impl);
