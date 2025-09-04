@@ -12,7 +12,7 @@ AC_CONFIG_FILES([
 
 # Check for pipewire (still uses 0.3 package name in 1.4.x)
 PKG_CHECK_MODULES([PIPEWIRE], [libpipewire-0.3 >= 1.4.0])
-PKG_CHECK_MODULES([SPA], [libspa-0.2 >= 0.2.0])
+PKG_CHECK_MODULES([SPA], [libspa-0.2])
 
 # Get pipewire module directory
 AC_ARG_WITH([pipewire-moduledir],
