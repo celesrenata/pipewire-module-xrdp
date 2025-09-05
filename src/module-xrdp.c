@@ -641,8 +641,9 @@ static int create_fifo(struct impl *impl)
 		
 		if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
 			res = -errno;
-			pw_log_error("connect('%s'): %s", filename, spa_strerror(res));
-			goto error;
+			pw_log_warn("connect('%s'): %s - socket not ready, skipping", filename, spa_strerror(res));
+			close(fd);
+			return -ENOENT; /* Don't fail module, just skip this socket */
 		}
 	} else {
 		/* Handle FIFO */
@@ -978,11 +979,17 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 			&impl->core_listener,
 			&core_events, impl);
 
-	if ((res = create_fifo(impl)) < 0)
-		goto error;
-
-	if ((res = create_stream(impl)) < 0)
-		goto error;
+	if ((res = create_fifo(impl)) < 0) {
+		if (res == -ENOENT) {
+			pw_log_info("Socket not ready, module loaded but stream creation deferred");
+			/* Continue without stream - socket may appear later */
+		} else {
+			goto error;
+		}
+	} else {
+		if ((res = create_stream(impl)) < 0)
+			goto error;
+	}
 
 	pw_impl_module_add_listener(module, &impl->module_listener, &module_events, impl);
 
