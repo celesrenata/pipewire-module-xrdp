@@ -209,6 +209,10 @@ struct impl {
 	unsigned int underrun:1;
 };
 
+/* Forward declarations */
+static int create_fifo(struct impl *impl);
+static int create_stream(struct impl *impl);
+
 static uint64_t get_time_ns(struct impl *impl)
 {
 	struct timespec now;
@@ -227,6 +231,30 @@ static int set_timeout(struct impl *impl, uint64_t time)
 	pw_loop_update_timer(impl->data_loop,
                                 impl->timer, &timeout, &interval, true);
 	return 0;
+}
+
+static void on_socket_check_timeout(void *d, uint64_t expirations)
+{
+	struct impl *impl = d;
+	int res;
+	
+	/* Only try to create socket/stream if we don't have one yet */
+	if (impl->stream != NULL)
+		return;
+		
+	pw_log_debug("Checking for XRDP sockets...");
+	
+	if ((res = create_fifo(impl)) == 0) {
+		pw_log_info("XRDP socket found, creating stream");
+		if ((res = create_stream(impl)) < 0) {
+			pw_log_error("Failed to create stream: %s", spa_strerror(res));
+		} else {
+			/* Stop the timer once we successfully create the stream */
+			pw_loop_update_timer(impl->data_loop, impl->timer, NULL, NULL, false);
+		}
+	} else if (res != -ENOENT) {
+		pw_log_error("Error checking for socket: %s", spa_strerror(res));
+	}
 }
 
 static void on_timeout(void *d, uint64_t expirations)
@@ -979,17 +1007,20 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 			&impl->core_listener,
 			&core_events, impl);
 
-	if ((res = create_fifo(impl)) < 0) {
-		if (res == -ENOENT) {
-			pw_log_info("Socket not ready, module loaded but stream creation deferred");
-			/* Continue without stream - socket may appear later */
-		} else {
-			goto error;
-		}
-	} else {
-		if ((res = create_stream(impl)) < 0)
-			goto error;
+	/* Always defer socket/stream creation to avoid X server startup interference */
+	pw_log_info("Module loaded, socket/stream creation deferred until XRDP session starts");
+	
+	/* Set up a timer to periodically check for XRDP sockets */
+	impl->timer = pw_loop_add_timer(impl->data_loop, on_socket_check_timeout, impl);
+	if (impl->timer == NULL) {
+		res = -errno;
+		pw_log_error("can't create socket check timer");
+		goto error;
 	}
+	
+	/* Check for sockets every 5 seconds */
+	struct timespec timeout = { .tv_sec = 5, .tv_nsec = 0 };
+	pw_loop_update_timer(impl->data_loop, impl->timer, &timeout, NULL, false);
 
 	pw_impl_module_add_listener(module, &impl->module_listener, &module_events, impl);
 
